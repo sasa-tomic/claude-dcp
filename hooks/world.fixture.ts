@@ -127,7 +127,7 @@ export function conversation() {
   return t
 }
 export const clones = (seen: { writes: Record<string, string> }) => Object.keys(seen.writes).filter(p => p.endsWith('.jsonl'))
-export const complete = ($: any, answer = 'all done') => $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
+export const complete = ($: any, answer = 'all done', usage?: unknown) => $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage })
 export const start = ($: any) => $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
 export const submit = ($: any, text = 'hi', extra = {}) => $.prompt.submit({ text, ...extra })
 export const compress = ($: any, content: unknown[]) => $.tool.call({ tool: TOOL, topic: 'T', content })

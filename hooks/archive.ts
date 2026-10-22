@@ -54,8 +54,8 @@ export async function listArchive($: Dollar, dir: string): Promise<string> {
 }
 
 export async function restoreSession($: Dollar, dir: string, id: string) {
-  if (!SESSION.test(id)) throw new Error(`"${id}" is not a session id; list them with /dcp-sessions`)
-  if (!(await $.fs.exists(`${dir}/${ARCHIVE}/${id}.jsonl`))) throw new Error(`no archived session ${id}; list them with /dcp-sessions`)
+  if (!SESSION.test(id)) throw new Error(`"${id}" is not a session id; list them with /dcp-archive`)
+  if (!(await $.fs.exists(`${dir}/${ARCHIVE}/${id}.jsonl`))) throw new Error(`no archived session ${id}; list them with /dcp-archive`)
   if (await $.fs.exists(`${dir}/${id}.jsonl`)) throw new Error(`session ${id} is already in the project`)
   await move($, `${dir}/${ARCHIVE}`, dir, id)
 }

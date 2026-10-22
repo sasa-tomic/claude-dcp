@@ -41,23 +41,23 @@ describe('archiving after a fork', () => {
   })
 })
 
-describe('/dcp-sessions and /dcp-restore', () => {
+describe('/dcp-archive and /dcp-restore', () => {
   const run = ($: any, command: string, args = '') => $.command.run({ command, args })
 
   test('register at session start', async ($, on) => {
     const { seen } = world(on, { rows: () => conversation().rows })
     await start($)
-    expect(seen.commands).toEqual(['dcp-sessions', 'dcp-restore'])
+    expect(seen.commands).toEqual(['dcp-archive', 'dcp-restore', 'dcp-stats'])
   })
 
   test('list archived sessions, newest first, with title, age and size', async ($, on) => {
     world(on, { rows: () => conversation().rows, archived: { [OLD]: { ageDays: 3, size: 2_500_000, title: 'Fix the parser' }, [OLDER]: { ageDays: 9, size: 400_000 } } })
-    expect((await run($, 'dcp-sessions')).text).toBe(`${OLD} · Fix the parser · 3d ago · 2.5 MB\n${OLDER} · untitled · 9d ago · 0.4 MB\n\nRestore one with /dcp-restore <id>, then /resume.`)
+    expect((await run($, 'dcp-archive')).text).toBe(`${OLD} · Fix the parser · 3d ago · 2.5 MB\n${OLDER} · untitled · 9d ago · 0.4 MB\n\nRestore one with /dcp-restore <id>, then /resume.`)
   })
 
   test('say so when nothing is archived', async ($, on) => {
     world(on, { rows: () => conversation().rows })
-    expect((await run($, 'dcp-sessions')).text).toBe('No archived sessions.')
+    expect((await run($, 'dcp-archive')).text).toBe('No archived sessions.')
   })
 
   test('restore moves an archived session back into the project', async ($, on) => {
@@ -69,7 +69,7 @@ describe('/dcp-sessions and /dcp-restore', () => {
 
   test('restore answers an error for what is not an archived session id', async ($, on) => {
     world(on, { rows: () => conversation().rows, archived: { [OLD]: { ageDays: 3 } } })
-    expect((await run($, 'dcp-restore', '../x')).text).toBe('dcp: "../x" is not a session id; list them with /dcp-sessions')
-    expect((await run($, 'dcp-restore', GOOD_ID)).text).toBe(`dcp: no archived session ${GOOD_ID}; list them with /dcp-sessions`)
+    expect((await run($, 'dcp-restore', '../x')).text).toBe('dcp: "../x" is not a session id; list them with /dcp-archive')
+    expect((await run($, 'dcp-restore', GOOD_ID)).text).toBe(`dcp: no archived session ${GOOD_ID}; list them with /dcp-archive`)
   })
 })

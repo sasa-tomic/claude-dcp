@@ -4,6 +4,7 @@ import type { On } from 'claude-code'
 import { CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
+import { emptyStats, recordFork } from './stats'
 import { Transcript } from './rows.fixture'
 import { parseTranscript, serializeTranscript } from './transcript'
 
@@ -288,7 +289,7 @@ describe('turn.complete', () => {
   })
 
   test('with nothing queued, pins the real context size and the saving so far, per session', async ($, on) => {
-    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, store: { 'saved:old-id': 2500, 'saved:other': 99999 } })
+    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, store: { 'stats:old-id': recordFork(emptyStats(), { removed: 2500, gone: [] }), 'stats:other': recordFork(emptyStats(), { removed: 99999, gone: [] }) } })
     await start($)
     await complete($)
     expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved ~2.5k so far')

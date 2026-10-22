@@ -7,8 +7,10 @@ import { messageRef, tagLine } from './ids'
 import { COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
 import { limitNudge, systemPrompt, toolDescription } from './prompts'
 import { approxTokens, blockReport, estimateRowsTokens, estimateTokens, formatTokens, messageReport, resolveLimit } from './nudges'
+import { isProtected } from './protected'
 import { foldCompressInput, STUB_MAX_CHARS, stopPrompt, stopTier } from './stop'
-import { applyPrunes, markPruned, type StrategyConfig } from './strategies'
+import { applyPrunes, callSignature, markPruned, type StrategyConfig } from './strategies'
+import { emptyStats, hashSignature, recordCall, recordFork, recordTurn, renderStats, savedTokens, type Stats, type TurnUsage } from './stats'
 import { assertCurrent, parseTranscript, serializeTranscript } from './transcript'
 import type { Row } from './rows'
 
@@ -75,8 +77,12 @@ async function writeQueue($: Dollar, queue: Queued[]) {
   await $.store.set(`queue:${await $.session.id()}`, queue)
 }
 
-async function readSaved($: Dollar, id: string): Promise<number> {
-  return ((await $.store.get(`saved:${id}`)) as number | undefined) ?? 0
+async function readStats($: Dollar, id: string): Promise<Stats> {
+  return ((await $.store.get(`stats:${id}`)) as Stats | undefined) ?? emptyStats()
+}
+
+async function writeStats($: Dollar, id: string, stats: Stats) {
+  await $.store.set(`stats:${id}`, stats)
 }
 
 // A session's transcript lives in the project folder of the directory it started in, while the session's cwd moves with
@@ -240,9 +246,10 @@ async function forkQueued($: Dollar, config: Config, answer: string) {
   await writeTranscript($, `${dir}/${to}.jsonl`, out)
   transcriptDirs.set(to, dir)
   const [before, after] = [estimateRowsTokens(rows), estimateRowsTokens(out)]
-  const total = (await readSaved($, from)) + (before - after)
-  await $.store.set(`saved:${to}`, total)
   const { context } = await $.session.usage()
+  const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
+  const stats = recordFork(await readStats($, from), { removed: before - after, before: context.tokens, gone })
+  await writeStats($, to, stats)
   const conversation = `conversation ${approxTokens(before)} -> ${approxTokens(after)} est.`
   const delta = before >= after ? `saved ${approxTokens(before - after)}` : `grew ${approxTokens(after - before)}`
   const wasReal = context.tokens === undefined ? '' : `; context was ${formatTokens(context.tokens)}`
@@ -262,11 +269,28 @@ async function forkQueued($: Dollar, config: Config, answer: string) {
       const deleted = await pruneArchive($, dir, config.archiveDays)
       await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted)`)
       await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${delta} tokens (${conversation})${wasReal}`)
-      await pin($, `compressed: ${conversation} · saved ${approxTokens(total)} so far`)
+      await pin($, `compressed: ${conversation} · saved ${approxTokens(savedTokens(stats))} so far`)
     } catch (err) {
       await report($, err)
     }
   })
+}
+
+/** Adds the finished turn to the lineage's stats; a turn that counted nothing (an interrupt, an API error) has no usage. */
+async function recordTurnStats($: Dollar, usage: TurnUsage | undefined) {
+  const { context } = await $.session.usage()
+  if (usage === undefined || context.tokens === undefined) return
+  const id = await $.session.id()
+  await writeStats($, id, recordTurn(await readStats($, id), context.tokens, usage))
+}
+
+/** Notes a call of the main loop that repeats one compressed away; `input` carries the tool's arguments beside the engine's own keys. */
+async function noteCall($: Dollar, tool: string, input: Record<string, any>) {
+  const { tool: _tool, tool_use_id: _id, consent: _consent, agentId: _agent, ...args } = input
+  const id = await $.session.id()
+  const stats = await readStats($, id)
+  const noted = recordCall(stats, hashSignature(callSignature(tool, args)))
+  if (noted !== stats) await writeStats($, id, noted)
 }
 
 /** Pins the text under the prompt and writes it where the user's statusLine command can read it. */
@@ -279,7 +303,7 @@ async function pin($: Dollar, text: string) {
 async function showStatus($: Dollar) {
   const { context } = await $.session.usage()
   if (context.tokens === undefined) return
-  await pin($, `context ${formatTokens(context.tokens)} / ${formatTokens(context.window)} (${Math.round((context.tokens / context.window) * 100)}%) · saved ${approxTokens(await readSaved($, await $.session.id()))} so far`)
+  await pin($, `context ${formatTokens(context.tokens)} / ${formatTokens(context.window)} (${Math.round((context.tokens / context.window) * 100)}%) · saved ${approxTokens(savedTokens(await readStats($, await $.session.id())))} so far`)
 }
 
 /** A command's output; a failure is its output too, since the engine would skip a hook that throws and print nothing. */
@@ -304,8 +328,9 @@ async function projectDir($: Dollar): Promise<string> {
 
 async function startSession($: Dollar, state: State) {
   resetNudges(state)
-  await $.command.register({ name: 'dcp-sessions', description: 'List the sessions dcp archived after compressing' })
-  await $.command.register({ name: 'dcp-restore', description: 'Move an archived session back so /resume finds it', argumentHint: '<session id>' })
+  await $.command.register({ name: 'dcp-archive', description: 'List sessions dcp archived after compressing' })
+  await $.command.register({ name: 'dcp-restore', description: 'Restore an archived session for /resume', argumentHint: '<session id>' })
+  await $.command.register({ name: 'dcp-stats', description: 'Show tokens dcp removed and the cache rewrites it caused' })
   await $.tool.register({
     name: TOOL_NAME,
     description: toolDescription(FULL_TOOL_NAME),
@@ -342,6 +367,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) return e.tool === FULL_TOOL_NAME ? { deny: `${FULL_TOOL_NAME} is for the main conversation only; a subagent's messages carry no ids.` } : next(e)
     let result
+    if (e.tool !== FULL_TOOL_NAME) await noteCall($, e.tool, e)
     if (e.tool === FULL_TOOL_NAME) {
       try {
         result = { result: await queueCompress($, config, state, e as unknown as CompressArgs) }
@@ -358,7 +384,7 @@ export const register: Register = (on, options) => {
     return { ...result, context: [...(result.context ?? []), ...nudges, tagLine(messageRef(++state.nextRef)).trim()] }
   })
 
-  on('command.run', { command: 'dcp-sessions' }, async $ => answer($, async () => listArchive($, await projectDir($))))
+  on('command.run', { command: 'dcp-archive' }, async $ => answer($, async () => listArchive($, await projectDir($))))
 
   on('command.run', { command: 'dcp-restore' }, async ($, e) =>
     answer($, async () => {
@@ -368,6 +394,8 @@ export const register: Register = (on, options) => {
       return `Restored ${id}. Open it with /resume.`
     }),
   )
+
+  on('command.run', { command: 'dcp-stats' }, async $ => answer($, async () => renderStats(await readStats($, await $.session.id()))))
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (e.props.tool !== FULL_TOOL_NAME) return next(e)
@@ -386,6 +414,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId !== undefined) return result
+    await recordTurnStats($, e.usage)
     await showStatus($)
     if (e.reason !== 'answer') return result
     if ((await readQueue($)).length === 0) return result

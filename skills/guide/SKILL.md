@@ -1,9 +1,9 @@
 ---
-name: dcp
-description: Use when working with the claude-dcp plugin — compressing context with the compress tool, reading the dcp status line or nudges, troubleshooting a missing tool, a failed fork or switch, or wrong IDs, or changing the plugin's code, tests or prompts.
+name: guide
+description: Use when working on or troubleshooting the claude-dcp plugin: compress tool, status line, nudges, forks, its code and tests.
 ---
 
-# dcp
+# dcp guide
 
 Dynamic context pruning. What it is, how it differs from opencode-dynamic-context-pruning, and what is not implemented: `README.md` in the plugin root. Options: `userConfig` in `.claude-plugin/plugin.json`.
 
@@ -39,7 +39,7 @@ A hook that throws is skipped by the engine with a dim transcript line. Only the
 
 ## Changing the code
 
-Module map is in `hooks/`: `register.ts` wires events; `compress.ts` plans ranges and expands block placeholders; `protected.ts` matches protected tools and files; `ids.ts` formats and parses ids; `apply.ts` rewrites rows; `strategies.ts` dedup and purge; `nudges.ts` limits and the block and message reports; `prompts.ts` system prompt, tool description and limit nudge; `stop.ts` end-of-turn prompts; `archive.ts` moves, lists, restores and prunes old sessions; `model.ts` finds tags, blocks and tool calls in rows; `transcript.ts` paths and parsing.
+Module map is in `hooks/`: `register.ts` wires events; `compress.ts` plans ranges and expands block placeholders; `protected.ts` matches protected tools and files; `ids.ts` formats and parses ids; `stats.ts` records turns, forks and repeated calls for `/dcp-stats`; `apply.ts` rewrites rows; `strategies.ts` dedup and purge; `nudges.ts` limits and the block and message reports; `prompts.ts` system prompt, tool description and limit nudge; `stop.ts` end-of-turn prompts; `archive.ts` moves, lists, restores and prunes old sessions; `model.ts` finds tags, blocks and tool calls in rows; `transcript.ts` paths and parsing.
 
 - Test first. Everything runs through the engine: `claude plugin test .`; also `claude plugin validate .` and `npx tsc -p .`. `hooks/rows.fixture.ts` builds transcripts; `world.fixture.ts` answers the engine's ops (`fs.*`, `process.run`, `session.*`, `ui.*`, `command.run`) with `on(...)` hooks that return `{ value }`.
 - Never derive the transcript path from `$.session.cwd()`: it changes with `cd`. A session that moved directories once lost all tagging and nudges silently, because every hook that read the transcript failed and the engine skipped it.

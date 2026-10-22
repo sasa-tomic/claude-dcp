@@ -14,9 +14,10 @@ export type StrategyConfig = { deduplication: boolean; purgeErrors: boolean; pur
 const sortKeys = (value: any): any =>
   Array.isArray(value) ? value.map(sortKeys) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, sortKeys(value[k])])) : value
 
-const signature = (call: ToolCall) => {
-  const present = Object.fromEntries(Object.entries(call.input).filter(([, v]) => v !== undefined && v !== null))
-  return `${call.name}::${JSON.stringify(sortKeys(present))}`
+/** Identifies a call by tool and arguments, ignoring unset ones and key order. */
+export const callSignature = (name: string, input: Record<string, any>) => {
+  const present = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined && v !== null))
+  return `${name}::${JSON.stringify(sortKeys(present))}`
 }
 
 /** The tool call ids whose output (or, for failed calls, input) is pruned: duplicates and old errors. */
@@ -26,7 +27,7 @@ export function markPruned(idx: Index, config: StrategyConfig): Set<string> {
 
   if (config.deduplication) {
     const bySignature = new Map<string, string[]>()
-    for (const call of unprotected) bySignature.set(signature(call), [...(bySignature.get(signature(call)) ?? []), call.id])
+    for (const call of unprotected) bySignature.set(callSignature(call.name, call.input), [...(bySignature.get(callSignature(call.name, call.input)) ?? []), call.id])
     for (const ids of bySignature.values()) for (const id of ids.slice(0, -1)) pruned.add(id)
   }
   if (config.purgeErrors) {

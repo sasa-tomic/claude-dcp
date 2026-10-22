@@ -44,7 +44,13 @@ Then `/plugin`, Installed tab, dcp, Update now, then `/reload-plugins`.
 
 ## Old sessions
 
-Each fork moves the session it replaces into `archive/` of the project folder, where `/resume` does not list it. `/dcp-sessions` lists the archived ones, `/dcp-restore <id>` moves one back. Archived sessions older than `archiveDays` are deleted at the next fork.
+Each fork moves the session it replaces into `archive/` of the project folder, where `/resume` does not list it. `/dcp-archive` lists the archived ones, `/dcp-restore <id>` moves one back. Archived sessions older than `archiveDays` are deleted at the next fork.
+
+## Measuring
+
+`/dcp-stats` reads figures the plugin records at each turn end, across forks. It reports the context per segment between forks, the tokens each fork removed (estimated as characters / 4), the cache write each fork forced, the tokens billed by kind, and the calls that repeated one compressed away. That last figure is a proxy for lost information, not a measure of accuracy.
+
+A fork rewrites the prompt cache, so a saving in context is not a saving in cost until enough turns follow; the per-segment lines show both sides.
 
 ## What differs from opencode-dynamic-context-pruning
 
