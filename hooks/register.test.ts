@@ -1,101 +1,11 @@
-import { describe, expect, mock, test } from 'claude-code/testing'
+import { describe, expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, submit, world } from './world.fixture'
+import type { World } from './world.fixture'
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
 import { parseTranscript, serializeTranscript } from './transcript'
-
-const HOME = '/home/u'
-const CWD = '/somewhere/else/entirely' // the session's cwd moves with every `cd`; the transcript does not
-const ID = 'old-id'
-const PROJECTS = `${HOME}/.claude/projects`
-const SRC = `${PROJECTS}/-work-proj/${ID}.jsonl`
-const TOOL = 'mcp__dcp__compress'
-const LOG = `${HOME}/.claude/dcp.log`
-const STATUS = `${HOME}/.claude/dcp-status-${ID}`
-
-type World = { tokens?: number; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog' }
-
-function world(on: On, w: World) {
-  const clock = mock.clock(on)
-  mock.store(on, w.store)
-  mock.env(on, { HOME })
-  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], tools: [] as any[], rendered: [] as any[], fills: [] as string[] }
-  on('session.start', (_$, e) => ({ cwd: e.cwd }))
-  on('classic.Stop', () => ({}))
-  on('prompt.read', () => ({ value: { text: w.draft ?? '', cursor: 0 } }))
-  on('prompt.fill', (_$, e) => {
-    seen.fills.push(e.text)
-    return w.fillRefusal ? { isFilled: false, refusal: w.fillRefusal, text: '', cursor: 0 } : { isFilled: true, text: e.text, cursor: e.text.length }
-  })
-  on('ui.render', (_$, e) => {
-    seen.rendered.push(e.props)
-    return { type: 'engine', ref: 1 } as any
-  })
-  on('turn.complete', (_$, e) => ({ text: e.answer }))
-  on('prompt.compose', () => ({ sections: [{ id: 'base', text: 'BASE', scope: 'shared' }] }))
-  on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
-  on('tool.call', (_$, e) => ({ result: `out of ${e.tool}`, text: `out of ${e.tool}` }) as any)
-  const session = w.session ?? { id: ID }
-  on('session.id', () => ({ value: session.id }))
-  on('session.cwd', () => ({ value: CWD }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: w.tokens, window: 200000 }, rateLimits: [] } }))
-  on('fs.list', (_$, e) => {
-    expect(e.path).toBe(PROJECTS)
-    const entry = (name: string, kind: 'dir' | 'file') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
-    return { value: [entry('-other', 'dir'), entry('README', 'file'), entry('-work-proj', 'dir')] }
-  })
-  on('fs.exists', (_$, e) => ({ value: w.exists !== false && (e.path === `${PROJECTS}/-work-proj/${session.id}.jsonl` || e.path in seen.writes) }))
-  on('fs.write', (_$, e) => {
-    seen.writes[e.path] = e.text
-    return { value: undefined }
-  })
-  on('process.spawn', async function* (_$, e) {
-    expect(e.argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', SRC])
-    const text = serializeTranscript(w.rows() as any)
-    const middle = Math.floor(text.length / 2) // a piece ends wherever the child's write did, mid-line included
-    for (const piece of [text.slice(0, middle), text.slice(middle)]) if (piece !== '') yield { stream: 'stdout' as const, text: piece }
-    yield { stream: 'stderr' as const, text: 'boom' }
-    return { value: { code: w.readExit ?? 0, signal: null } }
-  })
-  on('process.run', (_$, e) => {
-    expect(e.argv.slice(0, 1)).toEqual(['dd'])
-    seen.writes[e.argv[1]!.replace('of=', '')] = e.init!.stdin!
-    return { value: { exitCode: w.writeExit ?? 0, stdout: '', stderr: 'full', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  on('tool.register', (_$, e) => {
-    seen.tools.push(e)
-    return { value: { tool: TOOL } }
-  })
-  on('ui.toast', (_$, e) => {
-    seen.toasts.push(e.text)
-    return { value: undefined }
-  })
-  on('ui.status', (_$, e) => {
-    seen.statuses.push(e.text)
-    return { value: undefined }
-  })
-  on('command.run', (_$, e) => {
-    seen.resumes.push(`${e.command} ${e.args}`)
-    if (session.switchOnResume) session.id = e.args
-    return {}
-  })
-  return { clock, seen }
-}
-
-function conversation() {
-  const t = new Transcript()
-  t.prompt('goal', 'm0001') // 0
-  t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' }) // 1-3
-  t.call('Bash', { command: 'ls' }, { ref: 'm0003', output: 'BBB' }) // 4-6
-  t.text('all done') // 7
-  return t
-}
-const clones = (seen: { writes: Record<string, string> }) => Object.keys(seen.writes).filter(p => p.endsWith('.jsonl'))
-const complete = ($: any, answer = 'all done') => $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
-const start = ($: any) => $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
-const submit = ($: any, text = 'hi', extra = {}) => $.prompt.submit({ text, ...extra })
-const compress = ($: any, content: unknown[]) => $.tool.call({ tool: TOOL, topic: 'T', content })
 
 describe('session.start', () => {
   test('registers the compress tool with the DCP description, schema and its schema in the tool list', async ($, on) => {

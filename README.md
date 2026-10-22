@@ -42,6 +42,10 @@ Then `/plugin`, Installed tab, dcp, Update now, then `/reload-plugins`.
 /reload-plugins
 ```
 
+## Old sessions
+
+Each fork moves the session it replaces into `archive/` of the project folder, where `/resume` does not list it. `/dcp-sessions` lists the archived ones, `/dcp-restore <id>` moves one back. Archived sessions older than `archiveDays` are deleted at the next fork.
+
 ## What differs from opencode-dynamic-context-pruning
 
 - **Ids:** each `<dcp-message-id>` tag is added as hidden context, after a prompt and after each tool result, so one id names one prompt or one tool output (opencode: one id per message). Prompt text is never edited. Assistant text is untagged.

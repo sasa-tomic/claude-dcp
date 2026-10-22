@@ -1,6 +1,7 @@
 import type { Hook, Register } from 'claude-code'
 
 import { applyCompression } from './apply'
+import { archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, UNKNOWN_ID, assertDisjoint, planCompression } from './compress'
 import { messageRef, tagLine } from './ids'
 import { COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
@@ -11,13 +12,14 @@ import { applyPrunes, markPruned, type StrategyConfig } from './strategies'
 import { assertCurrent, parseTranscript, serializeTranscript } from './transcript'
 import type { Row } from './rows'
 
-type Dollar = Parameters<Hook<'turn.complete'>>[0]
+export type Dollar = Parameters<Hook<'turn.complete'>>[0]
 type Config = CompressConfig &
   StrategyConfig & {
     maxContextLimit: string
     minContextLimit: string
     nudgeFrequency: number
     summaryBuffer: boolean
+    archiveDays: number
   }
 type Queued = { args: CompressArgs; plans: Pick<Plan, 'index' | 'entry' | 's' | 'e'>[] }
 
@@ -255,7 +257,10 @@ async function forkQueued($: Dollar, config: Config, answer: string) {
         const { isFilled, refusal } = await $.prompt.fill({ text: draft })
         if (!isFilled) throw new Error(`could not put the unsent draft back after the switch (${refusal ?? 'refused by a hook'}); it was: ${draft}`)
       }
-      await log($, `now in ${id}, forked from ${from}`)
+      await archiveSession($, dir, from)
+      transcriptDirs.delete(from)
+      const deleted = await pruneArchive($, dir, config.archiveDays)
+      await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted)`)
       await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${delta} tokens (${conversation})${wasReal}`)
       await pin($, `compressed: ${conversation} · saved ${approxTokens(total)} so far`)
     } catch (err) {
@@ -277,8 +282,30 @@ async function showStatus($: Dollar) {
   await pin($, `context ${formatTokens(context.tokens)} / ${formatTokens(context.window)} (${Math.round((context.tokens / context.window) * 100)}%) · saved ${approxTokens(await readSaved($, await $.session.id()))} so far`)
 }
 
+/** A command's output; a failure is its output too, since the engine would skip a hook that throws and print nothing. */
+async function answer($: Dollar, work: () => Promise<string>) {
+  try {
+    return { text: await work() }
+  } catch (err) {
+    await log($, `ERROR dcp: ${err instanceof Error ? err.message : String(err)}`)
+
+    return { text: `dcp: ${err instanceof Error ? err.message : String(err)}`, exitCode: 1 }
+  }
+}
+
+/** The project folder that holds this session's transcript, and with it the archive. */
+async function projectDir($: Dollar): Promise<string> {
+  const id = await $.session.id()
+  const path = await findTranscript($, id)
+  if (!path) throw new Error(`no transcript found for session ${id}`)
+
+  return path.slice(0, path.lastIndexOf('/'))
+}
+
 async function startSession($: Dollar, state: State) {
   resetNudges(state)
+  await $.command.register({ name: 'dcp-sessions', description: 'List the sessions dcp archived after compressing' })
+  await $.command.register({ name: 'dcp-restore', description: 'Move an archived session back so /resume finds it', argumentHint: '<session id>' })
   await $.tool.register({
     name: TOOL_NAME,
     description: toolDescription(FULL_TOOL_NAME),
@@ -330,6 +357,17 @@ export const register: Register = (on, options) => {
 
     return { ...result, context: [...(result.context ?? []), ...nudges, tagLine(messageRef(++state.nextRef)).trim()] }
   })
+
+  on('command.run', { command: 'dcp-sessions' }, async $ => answer($, async () => listArchive($, await projectDir($))))
+
+  on('command.run', { command: 'dcp-restore' }, async ($, e) =>
+    answer($, async () => {
+      const id = e.args.trim()
+      await restoreSession($, await projectDir($), id)
+
+      return `Restored ${id}. Open it with /resume.`
+    }),
+  )
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (e.props.tool !== FULL_TOOL_NAME) return next(e)
