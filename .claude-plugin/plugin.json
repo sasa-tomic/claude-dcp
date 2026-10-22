@@ -1,0 +1,19 @@
+{
+  "name": "dcp",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Dynamic context pruning: the model compresses closed conversation ranges into summaries; the session is forked and switched to apply them",
+  "userConfig": {
+    "maxContextLimit": { "type": "string", "title": "Max context limit", "description": "Tokens (e.g. 150000) or a percent of the model window (e.g. 75%) above which the end-of-turn prompt is very aggressive and the emergency nudge is sent", "default": "150000" },
+    "minContextLimit": { "type": "string", "title": "Min context limit", "description": "Tokens (e.g. 100000) or a percent of the model window (e.g. 50%) below which the end-of-turn prompt only drops, and summaries are limited to stubs", "default": "100000" },
+    "nudgeFrequency": { "type": "number", "title": "Nudge frequency", "description": "Tool results between repeated emergency nudges", "default": 5, "min": 1 },
+    "summaryBuffer": { "type": "boolean", "title": "Summary buffer", "description": "Raise the max context limit by the tokens the active summaries hold", "default": true },
+    "protectedTools": { "type": "string", "title": "Protected tools", "description": "Tool names whose outputs are kept verbatim in compression summaries (globs allowed)", "multiple": true, "default": ["Task", "Agent", "Skill", "TodoWrite"] },
+    "protectedFilePatterns": { "type": "string", "title": "Protected file patterns", "description": "Globs; tool calls touching matching files are protected from dedup, purge and compression", "multiple": true, "default": [] },
+    "protectUserMessages": { "type": "boolean", "title": "Protect user messages", "description": "Keep user messages verbatim inside compression summaries", "default": false },
+    "protectTags": { "type": "boolean", "title": "Protect <protect> tags", "description": "Keep <protect>...</protect> prompt text verbatim inside compression summaries", "default": false },
+    "deduplication": { "type": "boolean", "title": "Deduplication", "description": "Prune older tool calls with identical tool and arguments when compressing", "default": true },
+    "purgeErrors": { "type": "boolean", "title": "Purge errors", "description": "Prune inputs of old failed tool calls when compressing", "default": true },
+    "purgeErrorsTurns": { "type": "number", "title": "Purge errors after turns", "description": "Assistant turns a failed call must be old before its input is pruned", "default": 4, "min": 1 }
+  }
+}

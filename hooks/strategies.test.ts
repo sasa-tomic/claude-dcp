@@ -1,0 +1,67 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import { indexRows } from './model'
+import { Transcript } from './rows.fixture'
+import { PRUNED_TOOL_ERROR_INPUT, PRUNED_TOOL_OUTPUT, PRUNED_QUESTION_INPUT, applyPrunes, markPruned } from './strategies'
+
+const cfg = { deduplication: true, purgeErrors: true, purgeErrorsTurns: 2, protectedFilePatterns: ['**/*.env'] }
+
+describe('deduplication', () => {
+  test('prunes all but the latest of calls with identical tool and arguments, ignoring key order and null values', () => {
+    const t = new Transcript()
+    t.call('Read', { file_path: '/a', limit: null }, { id: 'c1' })
+    t.call('Read', { limit: undefined, file_path: '/a' }, { id: 'c2' })
+    t.call('Read', { file_path: '/a' }, { id: 'c3' })
+    t.call('Read', { file_path: '/b' }, { id: 'c4' })
+    expect([...markPruned(indexRows(t.rows), cfg)].sort()).toEqual(['c1', 'c2'])
+  })
+
+  test('keeps duplicates that touch protected file patterns, and does nothing when disabled', () => {
+    const t = new Transcript()
+    t.call('Read', { file_path: '/x/.env' }, { id: 'c1' })
+    t.call('Read', { file_path: '/x/.env' }, { id: 'c2' })
+    expect(markPruned(indexRows(t.rows), cfg).size).toBe(0)
+    const u = new Transcript()
+    u.call('Bash', { command: 'ls' }, { id: 'c1' })
+    u.call('Bash', { command: 'ls' }, { id: 'c2' })
+    expect(markPruned(indexRows(u.rows), { ...cfg, deduplication: false }).size).toBe(0)
+  })
+})
+
+describe('purge errors', () => {
+  function errored() {
+    const t = new Transcript()
+    t.call('Bash', { command: 'bad' }, { id: 'old', isError: true, output: 'boom' }) // turn 1
+    t.call('Bash', { command: 'bad2' }, { id: 'new', isError: true, output: 'boom' }) // turn 2
+    t.call('Read', { file_path: '/a' }, { id: 'ok' }) // turn 3
+    return t
+  }
+
+  test('prunes failed calls at least purgeErrorsTurns old and never successful ones', () => {
+    expect([...markPruned(indexRows(errored().rows), cfg)]).toEqual(['old'])
+  })
+
+  test('does nothing when disabled', () => {
+    expect(markPruned(indexRows(errored().rows), { ...cfg, purgeErrors: false }).size).toBe(0)
+  })
+})
+
+describe('applyPrunes', () => {
+  test('replaces pruned outputs, error inputs and question inputs; leaves edit/write outputs and other calls alone', () => {
+    const t = new Transcript()
+    t.call('Read', { file_path: '/a' }, { id: 'r', output: 'BIG' }) // 0,1
+    t.call('Bash', { command: 'x', timeout: 5 }, { id: 'e', isError: true, output: 'boom' }) // 2,3
+    t.call('AskUserQuestion', { questions: ['q'] }, { id: 'q', output: 'answers' }) // 4,5
+    t.call('Edit', { file_path: '/a' }, { id: 'ed', output: 'edited' }) // 6,7
+    t.call('Read', { file_path: '/z' }, { id: 'keep', output: 'KEEP' }) // 8,9
+    const out = applyPrunes(t.rows, indexRows(t.rows), new Set(['r', 'e', 'q', 'ed']))
+    expect(out[1].message.content[0].content).toBe(PRUNED_TOOL_OUTPUT)
+    expect(out[2].message.content[0].input).toEqual({ command: PRUNED_TOOL_ERROR_INPUT, timeout: 5 })
+    expect(out[3].message.content[0].content).toBe('boom')
+    expect(out[4].message.content[0].input.questions).toBe(PRUNED_QUESTION_INPUT)
+    expect(out[5].message.content[0].content).toBe('answers')
+    expect(out[7].message.content[0].content).toBe('edited')
+    expect(out[9].message.content[0].content).toBe('KEEP')
+    expect(t.rows[1].message.content[0].content).toBe('BIG')
+  })
+})
