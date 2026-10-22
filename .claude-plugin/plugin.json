@@ -4,16 +4,16 @@
   "license": "MIT",
   "description": "Dynamic context pruning: the model compresses closed conversation ranges into summaries; the session is forked and switched to apply them",
   "userConfig": {
-    "maxContextLimit": { "type": "string", "title": "Max context limit", "description": "Tokens (e.g. 150000) or a percent of the model window (e.g. 75%) above which the end-of-turn prompt is very aggressive and the emergency nudge is sent", "default": "150000" },
-    "minContextLimit": { "type": "string", "title": "Min context limit", "description": "Tokens (e.g. 100000) or a percent of the model window (e.g. 50%) below which the end-of-turn prompt only drops, and summaries are limited to stubs", "default": "100000" },
-    "nudgeFrequency": { "type": "number", "title": "Nudge frequency", "description": "Tool results between repeated emergency nudges", "default": 5, "min": 1 },
-    "summaryBuffer": { "type": "boolean", "title": "Summary buffer", "description": "Raise the max context limit by the tokens the active summaries hold", "default": true },
-    "protectedTools": { "type": "string", "title": "Protected tools", "description": "Tool names whose outputs are kept verbatim in compression summaries (globs allowed)", "multiple": true, "default": ["Task", "Agent", "Skill", "TodoWrite"] },
-    "protectedFilePatterns": { "type": "string", "title": "Protected file patterns", "description": "Globs; tool calls touching matching files are protected from dedup, purge and compression", "multiple": true, "default": [] },
-    "protectUserMessages": { "type": "boolean", "title": "Protect user messages", "description": "Keep user messages verbatim inside compression summaries", "default": false },
-    "protectTags": { "type": "boolean", "title": "Protect <protect> tags", "description": "Keep <protect>...</protect> prompt text verbatim inside compression summaries", "default": false },
-    "deduplication": { "type": "boolean", "title": "Deduplication", "description": "Prune older tool calls with identical tool and arguments when compressing", "default": true },
-    "purgeErrors": { "type": "boolean", "title": "Purge errors", "description": "Prune inputs of old failed tool calls when compressing", "default": true },
-    "purgeErrorsTurns": { "type": "number", "title": "Purge errors after turns", "description": "Assistant turns a failed call must be old before its input is pruned", "default": 4, "min": 1 }
+    "maxContextLimit": { "type": "string", "title": "Max context limit", "description": "Above this, every turn end demands aggressive compression and tool results carry a nudge. Tokens (150000) or % of the model window (75%). Keep above the min. Optional: raise to tolerate larger contexts.", "default": "150000" },
+    "minContextLimit": { "type": "string", "title": "Min context limit", "description": "Below this, turn ends only drop dead ranges (summaries capped at 200 characters); above it, they merge and paraphrase. Tokens (100000) or % of the model window (50%). Optional: lower to compress sooner.", "default": "100000" },
+    "nudgeFrequency": { "type": "number", "title": "Nudge frequency", "description": "Tool results between repeated nudges while context is over the max. Integer ≥ 1. Optional: raise if nudges are noisy.", "default": 5, "min": 1 },
+    "summaryBuffer": { "type": "boolean", "title": "Summary buffer", "description": "Add the tokens your summaries hold to the max, so they don't trigger aggressive compression. true/false. Optional: keep on.", "default": true },
+    "protectedTools": { "type": "string", "title": "Protected tools", "description": "Tools whose outputs are kept verbatim when their range is compressed. Names or globs (mcp__*). Optional: add tools whose exact output you need later.", "multiple": true, "default": ["Task", "Agent", "Skill", "TodoWrite"] },
+    "protectedFilePatterns": { "type": "string", "title": "Protected file patterns", "description": "Calls touching files matching these globs (src/**/*.ts) keep outputs verbatim when compressed and are never deduplicated or purged. Optional: empty by default.", "multiple": true, "default": [] },
+    "protectUserMessages": { "type": "boolean", "title": "Protect user messages", "description": "Copy your messages verbatim into the summary of their range. true/false. Optional: on costs tokens.", "default": false },
+    "protectTags": { "type": "boolean", "title": "Protect <protect> tags", "description": "Copy text you wrap in <protect>…</protect> verbatim into summaries. true/false. Optional.", "default": false },
+    "deduplication": { "type": "boolean", "title": "Deduplication", "description": "At each fork, replace outputs of repeated identical tool calls (same tool, same arguments) except the latest. true/false. Optional: keep on.", "default": true },
+    "purgeErrors": { "type": "boolean", "title": "Purge errors", "description": "At each fork, replace inputs of failed tool calls older than the turns set below. true/false. Optional: keep on.", "default": true },
+    "purgeErrorsTurns": { "type": "number", "title": "Purge errors after turns", "description": "Assistant turns a failed call must age before its input is purged. Integer ≥ 1. Optional.", "default": 4, "min": 1 }
   }
 }

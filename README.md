@@ -20,15 +20,28 @@ None of these numbers measure this plugin. The studies test retrieval benchmarks
 /plugin install dcp --marketplace sasa-tomic/claude-dcp
 ```
 
-To remove it:
+Needs Claude Code 2.1.287 or later (mods). The `prompt.compose` hook does not run in a plugin that a person installs where an organization manages Claude Code.
+
+## Configure
+
+Every option is optional; the defaults suit most sessions. List them with `claude plugin configure dcp@claude-dcp`, change them with `/plugin configure dcp@claude-dcp`.
+
+## Update
+
+```
+claude plugin marketplace update claude-dcp
+claude plugin update dcp@claude-dcp
+```
+
+Restart Claude Code to apply it.
+
+## Remove
 
 ```
 /plugin uninstall dcp
 /plugin marketplace remove claude-dcp
 /reload-plugins
 ```
-
-Needs Claude Code 2.1.287 or later (mods). The `prompt.compose` hook does not run in a plugin that a person installs where an organization manages Claude Code.
 
 ## What differs from opencode-dynamic-context-pruning
 
@@ -43,7 +56,3 @@ Needs Claude Code 2.1.287 or later (mods). The `prompt.compose` hook does not ru
 ## Not implemented
 
 Message mode, manual mode and `/dcp` commands, per-model limits, turn protection, custom prompt overrides, subagent support, compression notifications.
-
-## Options
-
-See `userConfig` in `.claude-plugin/plugin.json`.
