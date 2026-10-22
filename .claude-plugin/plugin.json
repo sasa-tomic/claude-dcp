@@ -1,6 +1,5 @@
 {
   "name": "dcp",
-  "version": "0.1.0",
   "license": "MIT",
   "description": "Dynamic context pruning: the model compresses closed conversation ranges into summaries; the session is forked and switched to apply them",
   "userConfig": {
