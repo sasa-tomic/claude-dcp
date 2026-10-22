@@ -14,7 +14,7 @@ const TOOL = 'mcp__dcp__compress'
 const LOG = `${HOME}/.claude/dcp.log`
 const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 
-type World = { tokens?: number; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; draft?: string; fillRefusal?: 'dialog' }
+type World = { tokens?: number; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog' }
 
 function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -50,9 +50,18 @@ function world(on: On, w: World) {
     seen.writes[e.path] = e.text
     return { value: undefined }
   })
-  on('process.run', (_$, e) => {
+  on('process.spawn', async function* (_$, e) {
     expect(e.argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', SRC])
-    return { value: { exitCode: w.readExit ?? 0, stdout: serializeTranscript(w.rows() as any), stderr: 'boom', isStdoutTruncated: false, isStderrTruncated: false } }
+    const text = serializeTranscript(w.rows() as any)
+    const middle = Math.floor(text.length / 2) // a piece ends wherever the child's write did, mid-line included
+    for (const piece of [text.slice(0, middle), text.slice(middle)]) if (piece !== '') yield { stream: 'stdout' as const, text: piece }
+    yield { stream: 'stderr' as const, text: 'boom' }
+    return { value: { code: w.readExit ?? 0, signal: null } }
+  })
+  on('process.run', (_$, e) => {
+    expect(e.argv.slice(0, 1)).toEqual(['dd'])
+    seen.writes[e.argv[1]!.replace('of=', '')] = e.init!.stdin!
+    return { value: { exitCode: w.writeExit ?? 0, stdout: '', stderr: 'full', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('tool.register', (_$, e) => {
     seen.tools.push(e)
@@ -446,6 +455,16 @@ describe('turn.complete', () => {
     expect(seen.toasts[0]).toContain('lags the session')
     expect(seen.resumes).toEqual([])
     expect(clones(seen)).toEqual([])
+  })
+  test('a fork that cannot be written fails loudly and does not switch', async ($, on) => {
+    const w: World = { tokens: 100, rows: () => conversation().rows }
+    const { seen } = world(on, w)
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+    w.writeExit = 1
+    await complete($)
+    expect(seen.toasts[0]).toContain('could not write the transcript')
+    expect(seen.resumes).toEqual([])
   })
 })
 

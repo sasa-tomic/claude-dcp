@@ -93,12 +93,24 @@ async function findTranscript($: Dollar, id: string): Promise<string | undefined
   return undefined
 }
 
-// The per-request API logs are a third of a transcript and grow quadratically; they would overflow the 4 MiB read limit.
+// The per-request API logs are a third of a transcript and grow quadratically. A transcript of several MiB exceeds what
+// `$.fs.read` and `$.process.run` copy (4 MiB), so it is streamed through `grep` and `dd` instead.
 async function readTranscript($: Dollar, path: string): Promise<Row[]> {
-  const { exitCode, stdout, stderr, isStdoutTruncated } = await $.process.run(['grep', '-v', '-e', '^{"type":"api-request', path])
-  if (exitCode !== 0 || isStdoutTruncated)
-    throw new Error(`could not read the whole transcript ${path}: exit ${exitCode}, truncated ${isStdoutTruncated}, ${stderr}`)
-  return parseTranscript(stdout, path)
+  const child = $.process.spawn({ argv: ['grep', '-v', '-e', '^{"type":"api-request', path] })
+  let [stdout, stderr] = ['', '']
+  for (let step = await child.next(); ; step = await child.next()) {
+    if (step.done) {
+      if (step.value.code !== 0) throw new Error(`could not read the whole transcript ${path}: exit ${step.value.code}, signal ${step.value.signal}, ${stderr}`)
+      return parseTranscript(stdout, path)
+    }
+    if (step.value.stream === 'stdout') stdout += step.value.text
+    else stderr += step.value.text
+  }
+}
+
+async function writeTranscript($: Dollar, path: string, rows: readonly Row[]) {
+  const { exitCode, stderr } = await $.process.run(['dd', `of=${path}`, 'status=none'], { stdin: serializeTranscript(rows), timeoutMs: 120_000 })
+  if (exitCode !== 0) throw new Error(`could not write the transcript ${path}: exit ${exitCode}, ${stderr}`)
 }
 
 /** Thrown by a `readWhen` check when the transcript has not caught up with the session yet; any other error ends the wait.
@@ -223,7 +235,7 @@ async function forkQueued($: Dollar, config: Config, answer: string) {
   const to = crypto.randomUUID()
   const out = applyCompression(applyPrunes(rows, idx, pruned), idx, plans, { sessionId: to, newUuid: () => crypto.randomUUID() })
   const dir = path.slice(0, path.lastIndexOf('/'))
-  await $.fs.write(`${dir}/${to}.jsonl`, serializeTranscript(out))
+  await writeTranscript($, `${dir}/${to}.jsonl`, out)
   transcriptDirs.set(to, dir)
   const [before, after] = [estimateRowsTokens(rows), estimateRowsTokens(out)]
   const total = (await readSaved($, from)) + (before - after)
