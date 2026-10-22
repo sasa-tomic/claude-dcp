@@ -10,6 +10,14 @@ The model gets a `compress` tool. It replaces closed conversation ranges with su
 /plugin install dcp --marketplace sasa-tomic/claude-dcp
 ```
 
+To remove it:
+
+```
+/plugin uninstall dcp
+/plugin marketplace remove claude-dcp
+/reload-plugins
+```
+
 Needs Claude Code 2.1.287 or later (mods). The `prompt.compose` hook does not run in a plugin that a person installs where an organization manages Claude Code.
 
 ## What differs from opencode-dynamic-context-pruning
