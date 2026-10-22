@@ -1,5 +1,5 @@
 import { expect, mock } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { AgentStatus, On } from 'claude-code'
 
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
@@ -19,7 +19,7 @@ export const DAY = 86_400_000
 export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 
-export type World = { tokens?: number; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string }
+export type World = { tokens?: number; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; agents?: { id: string; status: AgentStatus }[] }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -45,6 +45,7 @@ export function world(on: On, w: World) {
   on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
   on('tool.call', (_$, e) => ({ result: `out of ${e.tool}`, text: `out of ${e.tool}` }) as any)
   const session = w.session ?? { id: ID }
+  on('agent.list', () => ({ value: (w.agents ?? []) as any }))
   on('session.id', () => ({ value: session.id }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: w.tokens, window: 200000 }, rateLimits: [] } }))

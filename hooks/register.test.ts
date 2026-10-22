@@ -349,6 +349,32 @@ describe('turn.complete', () => {
     expect(seen.resumes).toEqual([])
   })
 
+  for (const status of ['pending', 'running', 'waiting'] as const) {
+    test(`holds the queue while a subagent is ${status}, and forks once none is`, async ($, on) => {
+      const w: World = { tokens: 100, rows: () => conversation().rows, agents: [{ id: 'sub', status }] }
+      const { clock, seen } = world(on, w)
+      await start($)
+      await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+      await complete($)
+      await clock.advance(1000)
+      expect(clones(seen)).toEqual([])
+      w.agents = [{ id: 'sub', status: 'completed' }]
+      await complete($)
+      await clock.advance(1000)
+      expect(clones(seen)).toHaveLength(1)
+    })
+  }
+
+  test('forks while the only agents are idle or ended', async ($, on) => {
+    const w: World = { tokens: 100, rows: () => conversation().rows, agents: ['idle', 'completed', 'failed', 'killed'].map((status, i) => ({ id: `a${i}`, status: status as any })) }
+    const { clock, seen } = world(on, w)
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+    await complete($)
+    await clock.advance(1000)
+    expect(clones(seen)).toHaveLength(1)
+  })
+
   test('ignores turns that did not end in an answer and keeps the queue for the next one', async ($, on) => {
     const { clock, seen } = await queued($, on)
     await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 't', reason: 'aborted' })

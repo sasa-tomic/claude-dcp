@@ -1,4 +1,4 @@
-import type { Hook, Register } from 'claude-code'
+import type { AgentStatus, Hook, Register } from 'claude-code'
 
 import { applyCompression } from './apply'
 import { archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
@@ -224,6 +224,13 @@ async function assertStubsUnderMin($: Dollar, config: Config, args: CompressArgs
 }
 
 /** Applies the queued compressions and the strategies to a copy of the transcript and switches the session to it. */
+const BUSY_STATUSES: AgentStatus[] = ['pending', 'running', 'waiting']
+
+// the fork moves the old session's folder, which holds the subagents' transcripts: wait until none is working
+async function agentsBusy($: Dollar) {
+  return (await $.agent.list()).some(a => BUSY_STATUSES.includes(a.status))
+}
+
 async function forkQueued($: Dollar, config: Config, answer: string) {
   const queued = await readQueue($)
   await writeQueue($, [])
@@ -418,6 +425,7 @@ export const register: Register = (on, options) => {
     await showStatus($)
     if (e.reason !== 'answer') return result
     if ((await readQueue($)).length === 0) return result
+    if (await agentsBusy($)) return result
     try {
       await forkQueued($, config, e.answer)
     } catch (err) {

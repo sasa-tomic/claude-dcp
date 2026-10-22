@@ -27,7 +27,7 @@ Start with `~/.claude/dcp.log` (last 200 lines; errors also toast). Then the ses
 | `Overlapping ranges …` | Two ranges, in one call or queued in the same turn, share rows. |
 | Stop never held back | `classic.Stop` skips when `stop_hook_active`, a compress is already queued, no real token figure exists yet, or the context is under the min with no tool result since the prompt. |
 | `summaries must be stubs` | Context is under `minContextLimit`; drop with a stub or wait. |
-| Compress answered, no fork | The queue is applied at `turn.complete` with reason `answer` only; an aborted turn keeps it. Look for `ERROR` in the log. |
+| Compress answered, no fork | The queue is applied at `turn.complete` with reason `answer` only; an aborted turn keeps it, and so does a turn that ends while a subagent is pending, running or waiting (the fork moves the folder holding its transcript). Look for `ERROR` in the log. |
 | `does not yet end with the turn's final answer; it lags the session` | The transcript never caught up within the attempts; the fork was skipped and the queue cleared. Rerun the compress. |
 | `switch to X did not happen` | `/resume X` returned but the session id is still the old one; checked right after the call. The fork file still exists. |
 | `no transcript found for session X` | No `~/.claude/projects/*/X.jsonl` exists. The transcript is looked up by session id, never from the cwd, because the cwd follows every `cd` the model runs and the transcript stays in the startup directory's folder. |

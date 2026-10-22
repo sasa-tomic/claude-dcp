@@ -2,7 +2,7 @@
 
 Dynamic context pruning for Claude Code: a reimplementation, with its own code and prompts, of the idea behind [opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning) (range mode).
 
-The model gets a `compress` tool. It replaces closed conversation ranges with summaries. Claude Code cannot rewrite a live conversation, so the compression is applied by forking the transcript at the end of the turn and switching the running session to the fork.
+The model gets a `compress` tool. It replaces closed conversation ranges with summaries. Claude Code cannot rewrite a live conversation, so the compression is applied by forking the transcript at the end of the turn (once no subagent is working) and switching the running session to the fork.
 
 ## Why prune continuously
 
