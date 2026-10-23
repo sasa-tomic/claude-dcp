@@ -48,7 +48,7 @@ describe('/dcp-archive and /dcp-restore', () => {
   test('register at session start', async ($, on) => {
     const { seen } = world(on, { rows: () => conversation().rows })
     await start($)
-    expect(seen.commands).toEqual(['dcp-archive', 'dcp-restore', 'dcp-stats'])
+    expect(seen.commands).toEqual(['dcp-archive', 'dcp-restore', 'dcp-prune', 'dcp-stats'])
   })
 
   test('list archived sessions, newest first, with title, age and size', async ($, on) => {

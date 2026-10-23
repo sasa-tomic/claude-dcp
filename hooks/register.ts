@@ -5,7 +5,7 @@ import { archiveSession, listArchive, pruneArchive, restoreSession, run } from '
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, UNKNOWN_ID, assertDisjoint, planCompression } from './compress'
 import { messageRef, tagLine } from './ids'
 import { COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
-import { limitNudge, systemPrompt, toolDescription } from './prompts'
+import { limitNudge, prunePrompt, systemPrompt, toolDescription } from './prompts'
 import { answeredRequests, blockReport, formatTokens, messageReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
 import { isProtected } from './protected'
 import { foldCompressInput, STUB_MAX_CHARS, stopPrompt, stopTier } from './stop'
@@ -79,11 +79,11 @@ async function writeQueue($: Dollar, queue: Queued[]) {
 }
 
 async function readStats($: Dollar, id: string): Promise<Stats> {
-  return ((await $.store.get(`stats:${id}`)) as Stats | undefined) ?? emptyStats()
+  return ((await $.store.get(`stats2:${id}`)) as Stats | undefined) ?? emptyStats()
 }
 
 async function writeStats($: Dollar, id: string, stats: Stats) {
-  await $.store.set(`stats:${id}`, stats)
+  await $.store.set(`stats2:${id}`, stats)
 }
 
 // A session's transcript lives in the project folder of the directory it started in, while the session's cwd moves with
@@ -146,7 +146,7 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
   }
 }
 
-type State = { nextRef: number; toolsSincePrompt: number; sinceLimitNudge: number; queuedThisTurn: boolean }
+type State = { nextRef: number; toolsSincePrompt: number; sinceLimitNudge: number; queuedThisTurn: boolean; pruning: boolean }
 
 const resetNudges = (state: State) => Object.assign(state, { toolsSincePrompt: 0, sinceLimitNudge: Infinity })
 
@@ -216,7 +216,7 @@ async function queueCompress($: Dollar, config: Config, state: State, args: Comp
       throw err instanceof PlanError && err.message.includes(UNKNOWN_ID) ? new LagError(err.message) : err
     }
   })
-  await assertStubsUnderMin($, config, args)
+  if (!state.pruning) await assertStubsUnderMin($, config, args)
   assertDisjoint([...queued.flatMap(q => q.plans), ...plans.map(p => ({ ...p, index: queued.length + p.index }))])
   await writeQueue($, [...queued, { args, plans: plans.map(({ index, entry, s, e }) => ({ index, entry, s, e })) }])
   resetNudges(state)
@@ -245,8 +245,8 @@ async function agentsBusy($: Dollar) {
 const paysForRewrite = (config: Config, removed: number, rewritten: number) => removed >= config.minRemovedShare * rewritten
 
 /** Applies the queued compressions and the strategies to a copy of the transcript and switches the session to it; false when the
-    fork would cost the cache more than it removes, the compressions then waiting for a larger fork. */
-async function forkQueued($: Dollar, config: Config, answer: string): Promise<boolean> {
+    fork would cost the cache more than it removes, the compressions then waiting for a larger fork. `forced` (a /dcp-prune) skips that check. */
+async function forkQueued($: Dollar, config: Config, answer: string, forced: boolean): Promise<boolean> {
   const queued = await readQueue($)
   const from = await $.session.id()
   const { rows, path } = await readWhen($, (rows, path) => {
@@ -270,7 +270,7 @@ async function forkQueued($: Dollar, config: Config, answer: string): Promise<bo
   const removed = tokensOf(rowChars(rows) - rowChars(out), scale)
   const firstChanged = Math.min(...plans.map(p => p.s), ...idx.calls.filter(c => pruned.has(c.id)).map(c => c.useRow))
   const rewritten = tokensOf(rowChars(out.slice(firstChanged)), scale)
-  if (!paysForRewrite(config, removed, rewritten) && context.tokens <= maxLimit(config, context.window, idx, scale)) {
+  if (!forced && !paysForRewrite(config, removed, rewritten) && context.tokens <= maxLimit(config, context.window, idx, scale)) {
     await log($, `fork waits: it would remove ~${formatTokens(removed)} and make the cache rewrite ~${formatTokens(rewritten)} (minRemovedShare ${config.minRemovedShare})`)
 
     return false
@@ -379,6 +379,7 @@ async function startSession($: Dollar, state: State) {
   resetNudges(state)
   await $.command.register({ name: 'dcp-archive', description: 'List sessions dcp archived after compressing' })
   await $.command.register({ name: 'dcp-restore', description: 'Restore an archived session for /resume', argumentHint: '<session id>' })
+  await $.command.register({ name: 'dcp-prune', description: 'Ask the model to compress closed work now', argumentHint: '[hint]' })
   await $.command.register({ name: 'dcp-stats', description: 'Show tokens dcp removed and the cache rewrites it caused' })
   await $.tool.register({
     name: TOOL_NAME,
@@ -392,7 +393,7 @@ async function startSession($: Dollar, state: State) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, toolsSincePrompt: 0, sinceLimitNudge: Infinity, queuedThisTurn: false }
+  const state: State = { nextRef: 0, toolsSincePrompt: 0, sinceLimitNudge: Infinity, queuedThisTurn: false, pruning: false }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state)
@@ -445,6 +446,23 @@ export const register: Register = (on, options) => {
     }),
   )
 
+  on('command.run', { command: 'dcp-prune' }, async ($, e) =>
+    answer($, async () => {
+      state.pruning = true
+      // the host refuses a submit from inside this hook, which holds the turn the prompt would wait for
+      $.clock.after(RESUME_DELAY_MS, async () => {
+        try {
+          await $.prompt.submit({ text: prunePrompt(FULL_TOOL_NAME, e.args.trim()) })
+        } catch (err) {
+          state.pruning = false
+          await report($, err)
+        }
+      })
+
+      return 'Asked the model to compress closed work.'
+    }),
+  )
+
   on('command.run', { command: 'dcp-stats' }, async $ => answer($, async () => renderStats(await readStats($, await $.session.id()))))
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
@@ -467,10 +485,12 @@ export const register: Register = (on, options) => {
     await reported($, () => recordTurnStats($, e.usage))
     await showStatus($)
     if (e.reason !== 'answer') return result
+    const forced = state.pruning
+    state.pruning = false
     if ((await readQueue($)).length === 0) return result
     if (await agentsBusy($)) return result
     try {
-      await forkQueued($, config, e.answer)
+      await forkQueued($, config, e.answer, forced)
     } catch (err) {
       await report($, err)
       throw err

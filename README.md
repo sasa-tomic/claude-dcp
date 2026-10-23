@@ -42,6 +42,10 @@ Then `/plugin`, Installed tab, dcp, Update now, then `/reload-plugins`.
 /reload-plugins
 ```
 
+## Pruning on demand
+
+`/dcp-prune [hint]` asks the model to compress the largest closed chunks now, with dense summaries; the hint says where to focus (`/dcp-prune the audit work`). That one compress is not held to the stub rule under `minContextLimit`, and its fork ignores `minRemovedShare`. The fork still happens when the turn ends.
+
 ## Old sessions
 
 Each fork moves the session it replaces into `archive/` of the project folder, where `/resume` does not list it. `/dcp-archive` lists the archived ones, `/dcp-restore <id>` moves one back. Archived sessions older than `archiveDays` are deleted at the next fork.

@@ -31,3 +31,12 @@ export function limitNudge(tool: string, guidance: string): string {
     '</dcp-system-reminder>',
   ].join('\n')
 }
+
+/** What /dcp-prune asks, as a user turn: the largest closed chunks, summarised densely, whatever the context size. */
+export function prunePrompt(tool: string, hint: string): string {
+  return [
+    `Compress now: one ${tool} call over everything finished, largest closed chunks first, merging earlier blocks with (bN). Dense summaries: paths, signatures, decisions, errors, open items; no narrative. Leave the newest working messages.`,
+    ...(hint ? [`Focus: ${hint}`] : []),
+    'Then reply "ok" only.',
+  ].join(' ')
+}

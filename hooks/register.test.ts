@@ -118,7 +118,7 @@ describe('tool.call tagging and nudges', () => {
   })
 
   test('sends no nudge while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
-    world(on, { tokens: 160000, rows: () => conversation().rows, store: { 'stats:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) } })
+    world(on, { tokens: 160000, rows: () => conversation().rows, store: { 'stats2:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) } })
     await start($)
     expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
   })
@@ -255,14 +255,6 @@ describe('turn.complete', () => {
     expect(seen.shell).toContainEqual(['rm', '-f', '--', STATUS])
   })
 
-  const tailHeavy = () => {
-    const t = new Transcript()
-    t.prompt('goal', 'm0001')
-    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
-    t.call('Bash', { command: 'ls' }, { ref: 'm0003', output: 'B'.repeat(8000) })
-    t.text('all done')
-    return t
-  }
 
   test('a fork that would remove far less than it makes the cache rewrite waits, queue and all', async ($, on) => {
     const t = tailHeavy()
@@ -376,11 +368,17 @@ describe('turn.complete', () => {
   })
 
   test('with nothing queued, pins the real context size and the saving so far, per session', async ($, on) => {
-    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, store: { 'stats:old-id': measured(5000, 2500), 'stats:other': measured(999999, 1) } })
+    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, store: { 'stats2:old-id': measured(5000, 2500), 'stats2:other': measured(999999, 1) } })
     await start($)
     await complete($)
     expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved 2.5k so far')
     expect(seen.writes[STATUS]).toBe(seen.statuses.at(-1))
+  })
+
+  test('ignores stats stored by an earlier version of the plugin under the old key', async ($, on) => {
+    world(on, { tokens: 100, rows: () => conversation().rows, store: { 'stats:old-id': measured(5000, 2500) } })
+    await start($)
+    expect((await ($ as any).command.run({ command: 'dcp-stats', args: '' })).text).toContain('0 forks over 0 turns; 0 tokens removed')
   })
 
   test('with nothing saved yet, shows 0', async ($, on) => {
@@ -492,6 +490,82 @@ describe('turn.complete', () => {
   })
 })
 
+const tailHeavy = () => {
+  const t = new Transcript()
+  t.prompt('goal', 'm0001')
+  t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
+  t.call('Bash', { command: 'ls' }, { ref: 'm0003', output: 'B'.repeat(8000) })
+  t.text('all done')
+  return t
+}
+
+describe('/dcp-prune', () => {
+  const prune = async ($: any, args = '') => ($ as any).command.run({ command: 'dcp-prune', args })
+
+  test('is registered with a hint argument', async ($, on) => {
+    const { seen } = world(on, { tokens: 100, rows: () => conversation().rows })
+    await start($)
+    expect(seen.commands).toContain('dcp-prune')
+  })
+
+  test('asks the model to compress, with the hint, and says so', async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 100, rows: () => conversation().rows })
+    await start($)
+    expect((await prune($, ' the audit work ')).text).toBe('Asked the model to compress closed work.')
+    await clock.advance(1000)
+    expect(seen.prompts).toEqual([expect.stringContaining('one mcp__dcp__compress call')])
+    expect(seen.prompts[0]).toContain('Focus: the audit work Then')
+  })
+
+  test('reports a refused submit loudly and drops the request', async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 99000, rows: () => conversation().rows, failing: 'prompt.submit' })
+    await start($)
+    await prune($)
+    await clock.advance(1000)
+    expect(seen.toasts.at(-1)).toContain('prompt.submit')
+    expect((await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'x'.repeat(500) }])).deny).toContain('summaries must be stubs')
+  })
+
+  test('lets a full summary through under the min limit, which the stub rule would deny, and only until its turn ends', async ($, on) => {
+    const { clock } = world(on, { tokens: 99000, rows: () => conversation().rows })
+    await start($)
+    await prune($)
+    expect((await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'x'.repeat(500) }])).result).toContain('Compressed')
+    await complete($)
+    await clock.advance(1000)
+    expect((await compress($, [{ startId: 'm0003', endId: 'm0003', summary: 'x'.repeat(500) }])).deny).toContain('summaries must be stubs')
+  })
+
+  test('forks although it would remove far less than it makes the cache rewrite, once', async ($, on) => {
+    const t = tailHeavy()
+    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    await prune($)
+    await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'read' }])
+    await complete($)
+    await clock.advance(1000)
+    expect(clones(seen)).toHaveLength(1)
+    expect(seen.writes[LOG]).not.toContain('fork waits')
+    await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'read again' }])
+    await complete($)
+    await clock.advance(1000)
+    expect(clones(seen)).toHaveLength(1)
+    expect(seen.writes[LOG]).toContain('fork waits')
+  })
+
+  test('a prune that queued nothing does not make a later, smaller compress skip the check', async ($, on) => {
+    const t = tailHeavy()
+    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    await prune($)
+    await complete($)
+    await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'read' }])
+    await complete($)
+    await clock.advance(1000)
+    expect(clones(seen)).toEqual([])
+  })
+})
+
 describe('classic.Stop', () => {
   const stop = ($: any, extra = {}) => $.classic.Stop({ stop_hook_active: false, ...extra })
   async function toolTurn($: any, on: On, tokens: number | undefined, store?: Record<string, unknown>) {
@@ -546,7 +620,7 @@ describe('classic.Stop', () => {
   })
 
   test('lets the stop through while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
-    await toolTurn($, on, 160000, { 'stats:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) })
+    await toolTurn($, on, 160000, { 'stats2:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) })
     expect((await stop($)).block).toBeUndefined()
   })
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { limitNudge, systemPrompt, toolDescription } from './prompts'
+import { limitNudge, prunePrompt, systemPrompt, toolDescription } from './prompts'
 
 const TOOL = 'mcp__dcp__compress'
 
@@ -37,5 +37,19 @@ describe('limitNudge', () => {
 
   test('has no blank guidance slot when there is no guidance', () => {
     expect(limitNudge(TOOL, '')).not.toContain('\n\n')
+  })
+})
+
+describe('prunePrompt', () => {
+  test('asks for one dense compress call and a bare ok, naming the tool', () => {
+    const text = prunePrompt(TOOL, '')
+    expect(text).toContain(`one ${TOOL} call`)
+    expect(text).toContain('Dense summaries')
+    expect(text.endsWith('Then reply "ok" only.')).toBe(true)
+    expect(text).not.toContain('Focus')
+  })
+
+  test('puts the hint in before the closing instruction', () => {
+    expect(prunePrompt(TOOL, 'the audit work')).toContain('Focus: the audit work Then reply "ok" only.')
   })
 })

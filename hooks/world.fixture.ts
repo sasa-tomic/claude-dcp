@@ -25,7 +25,7 @@ export function world(on: On, w: World) {
   const clock = mock.clock(on)
   mock.store(on, w.store)
   mock.env(on, { HOME })
-  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], shell: [] as string[][], commands: [] as string[] }
+  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], shell: [] as string[][], commands: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
   for (const [id, meta] of Object.entries(w.archived ?? {})) files.set(`${ARCHIVE}/${id}.jsonl`, { size: meta.size ?? 1, ageDays: meta.ageDays, title: meta.title })
@@ -42,7 +42,11 @@ export function world(on: On, w: World) {
   })
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('prompt.compose', () => ({ sections: [{ id: 'base', text: 'BASE', scope: 'shared' }] }))
-  on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
+  on('prompt.submit', (_$, e) => {
+    if (w.failing === 'prompt.submit') throw new Error('refused')
+    seen.prompts.push(e.text)
+    return { text: e.text, context: e.context }
+  })
   on('tool.call', (_$, e) => ({ result: `out of ${e.tool}`, text: `out of ${e.tool}` }) as any)
   const session = w.session ?? { id: ID }
   on('agent.list', () => ({ value: (w.agents ?? []) as any }))
