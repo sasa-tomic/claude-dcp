@@ -301,7 +301,7 @@ async function forkQueued($: Dollar, config: Config, answer: string, forced: boo
       await run($, ['rm', '-f', '--', await statusFile($, from)])
       await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted)`)
       await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
-      await pin($, `compressed: ${pending} · saved ${formatTokens(savedTokens(stats))} so far`)
+      await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
     } catch (err) {
       await report($, err)
     }

@@ -248,7 +248,7 @@ describe('turn.complete', () => {
     await clock.advance(1000)
     expect(seen.toasts).toHaveLength(1)
     expect(seen.toasts[0]).toMatch(/^dcp: compressed 1 range\(s\), pruned 0 tool call\(s\): ~2\.\dk removed \(estimated; measured at the next reply\)$/)
-    expect(seen.statuses.at(-1)).toMatch(/^compressed: ~2\.\dk removed \(estimated; measured at the next reply\) · saved 0 so far$/)
+    expect(seen.statuses.at(-1)).toMatch(/^compressed ~2\.\dk \(estimate\)$/)
     expect(session.id).not.toBe(ID)
     expect(seen.writes[`${HOME}/.claude/dcp-status-${session.id}`]).toBe(seen.statuses.at(-1))
     expect(seen.writes[LOG]).toMatch(/~2\.\dk removed \(estimated; measured at the next reply\), cache rewrite ~\d+/)
