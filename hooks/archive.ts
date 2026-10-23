@@ -4,7 +4,7 @@ const ARCHIVE = 'archive'
 const DAY_MS = 86_400_000
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
-async function run($: Dollar, argv: string[]) {
+export async function run($: Dollar, argv: string[]) {
   const { exitCode, stderr } = await $.process.run(argv)
   if (exitCode !== 0) throw new Error(`${argv.join(' ')} failed: exit ${exitCode}, ${stderr}`)
 }
@@ -29,7 +29,7 @@ async function archived($: Dollar, dir: string) {
 export async function pruneArchive($: Dollar, dir: string, days: number): Promise<number> {
   const cutoff = (await $.clock.now()) - days * DAY_MS
   const old = (await archived($, dir)).filter(s => s.mtimeMs < cutoff)
-  for (const { id } of old) await run($, ['rm', '-rf', '--', `${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`])
+  for (const { id } of old) await run($, ['rm', '-rf', '--', `${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`, `${await $.env.get('HOME')}/.claude/dcp-status-${id}`])
 
   return old.length
 }

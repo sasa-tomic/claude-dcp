@@ -48,18 +48,22 @@ Each fork moves the session it replaces into `archive/` of the project folder, w
 
 ## Measuring
 
-`/dcp-stats` reads figures the plugin records at each turn end, across forks. It reports the context per segment between forks, the tokens each fork removed (estimated as characters / 4), the cache write each fork forced, the tokens billed by kind, and the calls that repeated one compressed away. That last figure is a proxy for lost information, not a measure of accuracy.
+`/dcp-stats` reads figures the plugin records at each turn end, across forks. It reports the context per segment between forks, the tokens each fork removed, the cache write each fork forced, the tokens billed by kind, and the calls that repeated one compressed away. That last figure is a proxy for lost information, not a measure of accuracy.
 
-A fork rewrites the prompt cache, so a saving in context is not a saving in cost until enough turns follow; the per-segment lines show both sides.
+What a fork removed is measured, not estimated: the context of the last request before the fork minus the context of the first request after it, both as the API counted them. It reads slightly low, since that first request also holds your next prompt. The engine keeps reporting the old session's figures until that request, so until then the fork shows only its estimate, and the end-of-turn prompts and limit nudges stay silent.
+
+Sizes in the nudge lists, the summary buffer and the fork decision are estimates. They use the tokens per character of this conversation, measured on the API's counts: from one request to the next, the input grows by what the answer and the rows after it weigh. Code and JSON take more tokens per character than prose, so no fixed rate is assumed. In one hands-on run the estimate of a fork was 13.0k and the measurement 12.0k.
+
+A fork rewrites the prompt cache from its first change on, so a saving in context is not a saving in cost until enough turns follow; the per-segment lines show both sides.
 
 ## What differs from opencode-dynamic-context-pruning
 
 - **Ids:** each `<dcp-message-id>` tag is added as hidden context, after a prompt and after each tool result, so one id names one prompt or one tool output (opencode: one id per message). Prompt text is never edited. Assistant text is untagged.
-- **Timing:** `compress` validates and queues; the fork happens when the turn ends. Context shrinks after the turn, not mid-turn. The unsent draft in the prompt box is read before the switch and put back after it.
+- **Timing:** `compress` validates and queues; the fork happens when the turn ends. Context shrinks after the turn, not mid-turn. A fork that would remove less than `minRemovedShare` of what it makes the cache rewrite waits for a larger one, unless the context is over the max. The unsent draft in the prompt box is read before the switch and put back after it.
 - **Nudges:** opencode's turn and iteration nudges are replaced by a `classic.Stop` hook (`hooks/stop.ts`): the first stop of a turn is held back once with a prompt by context size. Under `minContextLimit` it asks only to drop dead ranges, and `compress` rejects summaries over 200 characters; from the min it asks to compress and merge the largest chunks; over `maxContextLimit` it asks to be very aggressive. The limit nudge after tool results stays, over the max.
 - **Strategies:** deduplication and purge-errors run when a compress is applied.
 - **Tool names:** prompts name the registered tool `mcp__dcp__compress`; protected tools default to Claude Code's `Task`, `Agent`, `Skill`, `TodoWrite`.
-- **Tokens:** estimated at 4 characters per token for summary and message sizes; context size is the engine's own figure.
+- **Tokens:** context size and the tokens a fork removed are the API's counts; sizes of summaries and messages are estimates (see Measuring).
 - **Log:** `~/.claude/dcp.log`; failures also toast.
 
 ## Not implemented

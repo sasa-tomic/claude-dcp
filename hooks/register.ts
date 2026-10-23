@@ -1,16 +1,16 @@
 import type { AgentStatus, Hook, Register } from 'claude-code'
 
 import { applyCompression } from './apply'
-import { archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
+import { archiveSession, listArchive, pruneArchive, restoreSession, run } from './archive'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, UNKNOWN_ID, assertDisjoint, planCompression } from './compress'
 import { messageRef, tagLine } from './ids'
 import { COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
 import { limitNudge, systemPrompt, toolDescription } from './prompts'
-import { approxTokens, blockReport, estimateRowsTokens, estimateTokens, formatTokens, messageReport, resolveLimit } from './nudges'
+import { answeredRequests, blockReport, formatTokens, messageReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
 import { isProtected } from './protected'
 import { foldCompressInput, STUB_MAX_CHARS, stopPrompt, stopTier } from './stop'
 import { applyPrunes, callSignature, markPruned, type StrategyConfig } from './strategies'
-import { emptyStats, hashSignature, recordCall, recordFork, recordTurn, renderStats, savedTokens, type Stats, type TurnUsage } from './stats'
+import { emptyStats, hashSignature, isAwaitingFirst, recordCall, recordFirstRequest, recordFork, recordTurn, renderStats, savedTokens, type Stats, type TurnUsage } from './stats'
 import { assertCurrent, parseTranscript, serializeTranscript } from './transcript'
 import type { Row } from './rows'
 
@@ -21,6 +21,7 @@ type Config = CompressConfig &
     minContextLimit: string
     nudgeFrequency: number
     summaryBuffer: boolean
+    minRemovedShare: number
     archiveDays: number
   }
 type Queued = { args: CompressArgs; plans: Pick<Plan, 'index' | 'entry' | 's' | 'e'>[] }
@@ -145,31 +146,37 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
   }
 }
 
-type State = { nextRef: number; toolsSincePrompt: number; sinceLimitNudge: number }
+type State = { nextRef: number; toolsSincePrompt: number; sinceLimitNudge: number; queuedThisTurn: boolean }
 
 const resetNudges = (state: State) => Object.assign(state, { toolsSincePrompt: 0, sinceLimitNudge: Infinity })
 
-async function guidance(idx: Index, rows: readonly Row[]) {
-  return [blockReport(idx.blocks), messageReport(rows, idx)].filter(s => s.length > 0).join('\n\n')
+async function guidance(idx: Index, rows: readonly Row[], scale: number) {
+  return [blockReport(idx.blocks, scale), messageReport(rows, idx, scale)].filter(s => s.length > 0).join('\n\n')
 }
 
 /** The max limit, raised by the tokens the active summaries hold. */
-function maxLimit(config: Config, window: number, idx: Index): number {
-  const buffer = config.summaryBuffer ? [...idx.blocks.values()].reduce((total, b) => total + estimateTokens(b.summary), 0) : 0
+function maxLimit(config: Config, window: number, idx: Index, scale: number): number {
+  const buffer = config.summaryBuffer ? [...idx.blocks.values()].reduce((total, b) => total + tokensOf(b.summary.length, scale), 0) : 0
   return resolveLimit(config.maxContextLimit, window) + buffer
+}
+
+/** The engine's context figure is the old session's until the first request after a fork; nothing is decided on it then. */
+async function figuresStale($: Dollar): Promise<boolean> {
+  return isAwaitingFirst(await readStats($, await $.session.id()))
 }
 
 /** The limit nudge after a tool result, when the context is over the max and enough results passed since the last one; empty otherwise. */
 async function computeNudges($: Dollar, config: Config, state: State): Promise<string[]> {
   const { context } = await $.session.usage()
   if (context.tokens === undefined || context.tokens < resolveLimit(config.minContextLimit, context.window)) return []
-  if (state.sinceLimitNudge < config.nudgeFrequency) return []
+  if (state.sinceLimitNudge < config.nudgeFrequency || (await figuresStale($))) return []
   const { rows } = await loadTranscript($)
   const idx = indexRows(rows)
-  if (context.tokens <= maxLimit(config, context.window, idx)) return []
+  const scale = tokensPerChar(rows)
+  if (scale === undefined || context.tokens <= maxLimit(config, context.window, idx, scale)) return []
   state.sinceLimitNudge = 0
 
-  return [limitNudge(FULL_TOOL_NAME, await guidance(idx, rows))]
+  return [limitNudge(FULL_TOOL_NAME, await guidance(idx, rows, scale))]
 }
 
 /** A failure here would otherwise only be a skipped hook (no tags, no nudges, no trace), so it is reported before it propagates. */
@@ -184,15 +191,17 @@ async function reported<T>($: Dollar, work: () => Promise<T>): Promise<T> {
 
 /** What to tell the model when it is about to stop, by how full the context is; undefined when nothing is worth asking. */
 async function stopReason($: Dollar, config: Config, state: State): Promise<string | undefined> {
-  if ((await readQueue($)).length > 0) return undefined
+  if (state.queuedThisTurn || (await figuresStale($))) return undefined
   const { context } = await $.session.usage()
   if (context.tokens === undefined) return undefined
   const min = resolveLimit(config.minContextLimit, context.window)
   if (context.tokens < min && state.toolsSincePrompt === 0) return undefined
   const { rows } = await loadTranscript($)
   const idx = indexRows(rows)
-  const tier = stopTier(context.tokens, min, maxLimit(config, context.window, idx))
-  const advice = tier === 'drop' ? messageReport(rows, idx) : await guidance(idx, rows)
+  const scale = tokensPerChar(rows)
+  if (scale === undefined) return undefined
+  const tier = stopTier(context.tokens, min, maxLimit(config, context.window, idx, scale))
+  const advice = tier === 'drop' ? messageReport(rows, idx, scale) : await guidance(idx, rows, scale)
 
   return [stopPrompt(tier, FULL_TOOL_NAME), advice].filter(part => part.length > 0).join('\n\n')
 }
@@ -211,6 +220,7 @@ async function queueCompress($: Dollar, config: Config, state: State, args: Comp
   assertDisjoint([...queued.flatMap(q => q.plans), ...plans.map(p => ({ ...p, index: queued.length + p.index }))])
   await writeQueue($, [...queued, { args, plans: plans.map(({ index, entry, s, e }) => ({ index, entry, s, e })) }])
   resetNudges(state)
+  state.queuedThisTurn = true
   return `Compressed ${plans.reduce((n, p) => n + p.messageCount, 0)} messages into ${COMPRESSED_BLOCK_HEADER}.`
 }
 
@@ -231,9 +241,13 @@ async function agentsBusy($: Dollar) {
   return (await $.agent.list()).some(a => BUSY_STATUSES.includes(a.status))
 }
 
-async function forkQueued($: Dollar, config: Config, answer: string) {
+/** Whether a fork that removes `removed` tokens is worth the cache rewrite it causes: everything from its first change on is written again. */
+const paysForRewrite = (config: Config, removed: number, rewritten: number) => removed >= config.minRemovedShare * rewritten
+
+/** Applies the queued compressions and the strategies to a copy of the transcript and switches the session to it; false when the
+    fork would cost the cache more than it removes, the compressions then waiting for a larger fork. */
+async function forkQueued($: Dollar, config: Config, answer: string): Promise<boolean> {
   const queued = await readQueue($)
-  await writeQueue($, [])
   const from = await $.session.id()
   const { rows, path } = await readWhen($, (rows, path) => {
     try {
@@ -249,18 +263,28 @@ async function forkQueued($: Dollar, config: Config, answer: string) {
   const pruned = markPruned(idx, config)
   const to = crypto.randomUUID()
   const out = applyCompression(applyPrunes(rows, idx, pruned), idx, plans, { sessionId: to, newUuid: () => crypto.randomUUID() })
+  const { context } = await $.session.usage()
+  if (context.tokens === undefined) throw new Error('no request has been answered yet, so the size of the context is unknown')
+  const scale = tokensPerChar(rows)
+  if (scale === undefined) throw new Error('the conversation has no two consecutive answered requests to measure its tokens per character on')
+  const removed = tokensOf(rowChars(rows) - rowChars(out), scale)
+  const firstChanged = Math.min(...plans.map(p => p.s), ...idx.calls.filter(c => pruned.has(c.id)).map(c => c.useRow))
+  const rewritten = tokensOf(rowChars(out.slice(firstChanged)), scale)
+  if (!paysForRewrite(config, removed, rewritten) && context.tokens <= maxLimit(config, context.window, idx, scale)) {
+    await log($, `fork waits: it would remove ~${formatTokens(removed)} and make the cache rewrite ~${formatTokens(rewritten)} (minRemovedShare ${config.minRemovedShare})`)
+
+    return false
+  }
+  await writeQueue($, [])
   const dir = path.slice(0, path.lastIndexOf('/'))
   await writeTranscript($, `${dir}/${to}.jsonl`, out)
   transcriptDirs.set(to, dir)
-  const [before, after] = [estimateRowsTokens(rows), estimateRowsTokens(out)]
-  const { context } = await $.session.usage()
   const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
-  const stats = recordFork(await readStats($, from), { removed: before - after, before: context.tokens, gone })
+  const stats = recordFork(await readStats($, from), { before: context.tokens, estimated: removed, copied: out.length, gone })
   await writeStats($, to, stats)
-  const conversation = `conversation ${approxTokens(before)} -> ${approxTokens(after)} est.`
-  const delta = before >= after ? `saved ${approxTokens(before - after)}` : `grew ${approxTokens(after - before)}`
-  const wasReal = context.tokens === undefined ? '' : `; context was ${formatTokens(context.tokens)}`
-  await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${conversation} (${delta}); resuming`)
+  const delta = removed >= 0 ? `~${formatTokens(removed)} removed` : `~${formatTokens(-removed)} added`
+  const pending = `${delta} (estimated; measured at the next reply)`
+  await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
   $.clock.after(RESUME_DELAY_MS, async () => {
     try {
       const draft = (await $.prompt.read()).text
@@ -274,21 +298,37 @@ async function forkQueued($: Dollar, config: Config, answer: string) {
       await archiveSession($, dir, from)
       transcriptDirs.delete(from)
       const deleted = await pruneArchive($, dir, config.archiveDays)
+      await run($, ['rm', '-f', '--', await statusFile($, from)])
       await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted)`)
-      await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${delta} tokens (${conversation})${wasReal}`)
-      await pin($, `compressed: ${conversation} · saved ${approxTokens(savedTokens(stats))} so far`)
+      await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
+      await pin($, `compressed: ${pending} · saved ${formatTokens(savedTokens(stats))} so far`)
     } catch (err) {
       await report($, err)
     }
   })
+
+  return true
 }
 
-/** Adds the finished turn to the lineage's stats; a turn that counted nothing (an interrupt, an API error) has no usage. */
+/** The usage of the first request the model answered after a fork: the first one beyond the rows the fork copied. */
+async function firstRequestAfter($: Dollar, copied: number): Promise<TurnUsage> {
+  return readWhen($, rows => {
+    const request = answeredRequests(rows).find(r => r.first >= copied)
+    if (request === undefined) throw new LagError(`no answered request after the ${copied} rows the fork copied`)
+
+    return request.usage
+  })
+}
+
+/** Adds the finished turn to the lineage's stats; a turn that counted nothing (an interrupt, an API error) has no usage.
+    The first turn after a fork also settles what that fork removed, from its first request. */
 async function recordTurnStats($: Dollar, usage: TurnUsage | undefined) {
   const { context } = await $.session.usage()
   if (usage === undefined || context.tokens === undefined) return
   const id = await $.session.id()
-  await writeStats($, id, recordTurn(await readStats($, id), context.tokens, usage))
+  let stats = await readStats($, id)
+  if (isAwaitingFirst(stats)) stats = recordFirstRequest(stats, await firstRequestAfter($, stats.segments.at(-1)!.copied!))
+  await writeStats($, id, recordTurn(stats, context.tokens, usage))
 }
 
 /** Notes a call of the main loop that repeats one compressed away; `input` carries the tool's arguments beside the engine's own keys. */
@@ -300,17 +340,19 @@ async function noteCall($: Dollar, tool: string, input: Record<string, any>) {
   if (noted !== stats) await writeStats($, id, noted)
 }
 
+const statusFile = async ($: Dollar, id: string) => `${await $.env.get('HOME')}/.claude/dcp-status-${id}`
+
 /** Pins the text under the prompt and writes it where the user's statusLine command can read it. */
 async function pin($: Dollar, text: string) {
   $.ui.status(text)
-  await $.fs.write(`${await $.env.get('HOME')}/.claude/dcp-status-${await $.session.id()}`, text)
+  await $.fs.write(await statusFile($, await $.session.id()), text)
 }
 
-/** Pins the real context size and the estimated saving so far of this session's lineage under the prompt. */
+/** Pins the real context size and the saving measured so far of this session's lineage under the prompt. */
 async function showStatus($: Dollar) {
   const { context } = await $.session.usage()
   if (context.tokens === undefined) return
-  await pin($, `context ${formatTokens(context.tokens)} / ${formatTokens(context.window)} (${Math.round((context.tokens / context.window) * 100)}%) · saved ${approxTokens(savedTokens(await readStats($, await $.session.id())))} so far`)
+  await pin($, `context ${formatTokens(context.tokens)} / ${formatTokens(context.window)} (${Math.round((context.tokens / context.window) * 100)}%) · saved ${formatTokens(savedTokens(await readStats($, await $.session.id())))} so far`)
 }
 
 /** A command's output; a failure is its output too, since the engine would skip a hook that throws and print nothing. */
@@ -350,7 +392,7 @@ async function startSession($: Dollar, state: State) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, toolsSincePrompt: 0, sinceLimitNudge: Infinity }
+  const state: State = { nextRef: 0, toolsSincePrompt: 0, sinceLimitNudge: Infinity, queuedThisTurn: false }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state)
@@ -367,6 +409,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (e.command || e.isMeta) return next(e)
     resetNudges(state)
+    state.queuedThisTurn = false
 
     return next({ ...e, context: [...(e.context ?? []), tagLine(messageRef(++state.nextRef)).trim()] })
   })
@@ -421,7 +464,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId !== undefined) return result
-    await recordTurnStats($, e.usage)
+    await reported($, () => recordTurnStats($, e.usage))
     await showStatus($)
     if (e.reason !== 'answer') return result
     if ((await readQueue($)).length === 0) return result

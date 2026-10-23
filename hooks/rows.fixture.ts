@@ -8,9 +8,14 @@ export class Transcript {
   rows: Row[] = []
   private last: string | null = null
   private n = 0
+  // what the API would have counted: a quarter of a row's characters, the input of a request being all the rows before it
+  private tokens = 0
 
   private push(row: Row): number {
     const uuid = `u${++this.n}`
+    const own = row.message ? Math.round(JSON.stringify(row.message.content).length / 4) : 0
+    if (row.type === 'assistant') row.message.usage = { input_tokens: this.tokens, output_tokens: own, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+    this.tokens += own
     this.rows.push({ parentUuid: this.last, isSidechain: false, uuid, sessionId: 's1', ...row })
     this.last = uuid
     return this.rows.length - 1

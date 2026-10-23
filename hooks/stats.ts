@@ -1,12 +1,15 @@
-import { formatTokens } from './nudges'
+import { approxTokens, formatTokens, inputTokens } from './nudges'
 
 /** What the API reported for the requests of one turn, summed. */
 export type TurnUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 
-/** The turns between two forks. The first turn after a fork pays to write the cache again, so it is kept apart. */
+/** The turns between two forks. `before` is the context of the last request before the fork, `first` that of the first request after it,
+    and `removed` their difference. Until that first request is seen (`copied` is set), the fork's own size is only `estimated`. */
 export type Segment = {
   removed: number
   before?: number
+  estimated?: number
+  copied?: number
   turns: number
   first: number
   last: number
@@ -31,14 +34,12 @@ export const savedTokens = (stats: Stats) => stats.segments.reduce((sum, s) => s
 /** Adds a finished turn: `context` is the input side of its last request, `usage` the sum over its requests. */
 export function recordTurn(stats: Stats, context: number, usage: TurnUsage): Stats {
   const last = stats.segments.at(-1)!
-  const first = last.turns === 0
   const next: Segment = {
     ...last,
     turns: last.turns + 1,
-    first: first ? context : last.first,
+    first: last.first > 0 ? last.first : context,
     last: context,
     peak: Math.max(last.peak, context),
-    rewritten: first ? usage.cache_creation_input_tokens : last.rewritten,
     uncached: last.uncached + usage.input_tokens,
     read: last.read + usage.cache_read_input_tokens,
     written: last.written + usage.cache_creation_input_tokens,
@@ -48,9 +49,25 @@ export function recordTurn(stats: Stats, context: number, usage: TurnUsage): Sta
   return { ...stats, segments: [...stats.segments.slice(0, -1), next] }
 }
 
-/** Opens the segment after a fork, remembering the calls whose output the fork compressed away. */
-export function recordFork(stats: Stats, fork: { removed: number; before?: number; gone: readonly string[] }): Stats {
-  return { ...stats, segments: [...stats.segments, segment(fork.removed, fork.before)], gone: [...stats.gone, ...fork.gone].slice(-GONE_LIMIT) }
+/** Opens the segment after a fork, remembering the calls whose output the fork compressed away. `copied` is the number of rows
+    of the forked transcript, so the first request after them is the fork's first. */
+export function recordFork(stats: Stats, fork: { before: number; estimated: number; copied: number; gone: readonly string[] }): Stats {
+  const opened = { ...segment(0, fork.before), estimated: fork.estimated, copied: fork.copied }
+
+  return { ...stats, segments: [...stats.segments, opened], gone: [...stats.gone, ...fork.gone].slice(-GONE_LIMIT) }
+}
+
+/** Whether the last fork still waits for the first request after it, until when the engine's context figures are the old session's. */
+export const isAwaitingFirst = (stats: Stats) => stats.segments.at(-1)!.copied !== undefined
+
+/** Settles the fork the last segment opened: what the API counted for the first request after it. */
+export function recordFirstRequest(stats: Stats, request: TurnUsage): Stats {
+  const last = stats.segments.at(-1)!
+  const { estimated: _estimated, copied: _copied, ...rest } = last
+  if (last.copied === undefined || last.before === undefined) throw new Error('no fork is waiting for its first request')
+  const first = inputTokens(request)
+
+  return { ...stats, segments: [...stats.segments.slice(0, -1), { ...rest, first, removed: last.before - first, rewritten: request.cache_creation_input_tokens }] }
 }
 
 /** Counts a call that repeats one compressed away earlier. */
@@ -70,16 +87,17 @@ export function renderStats(stats: Stats): string {
   const forks = stats.segments.length - 1
   const turns = stats.segments.reduce((sum, s) => sum + s.turns, 0)
   const total = (field: 'uncached' | 'read' | 'written' | 'output') => stats.segments.reduce((sum, s) => sum + s[field], 0)
+  const waiting = stats.segments.filter(s => s.copied !== undefined).length
   const lines = [
-    `${plural(forks, 'fork')} over ${plural(turns, 'turn')}; about ${formatTokens(savedTokens(stats))} tokens removed (estimate: characters / 4).`,
+    `${plural(forks, 'fork')} over ${plural(turns, 'turn')}; ${formatTokens(savedTokens(stats))} tokens removed (measured: the context before each fork minus the first request after it, which also holds your next prompt)${waiting > 0 ? `; ${waiting} not measured yet` : ''}.`,
     `${plural(stats.refetches, 'call')} repeated one compressed away (a proxy for lost information; a changed file counts too).`,
     '',
     'Context per segment, first → last turn (peak), then what the fork that opened it did:',
     ...stats.segments.map((s, i) => {
-      if (s.turns === 0) return `${i + 1}. no turn yet`
-      const fork = i === 0 ? '' : ` · fork removed ~${formatTokens(s.removed)} of ${s.before === undefined ? '?' : formatTokens(s.before)}, first turn wrote ${formatTokens(s.rewritten)} to the cache`
+      if (i === 0) return s.turns === 0 ? '1. no turn yet' : `1. ${plural(s.turns, 'turn')} · ${formatTokens(s.first)} → ${formatTokens(s.last)} (peak ${formatTokens(s.peak)})`
+      const fork = s.copied === undefined ? `fork removed ${formatTokens(s.removed)} of ${formatTokens(s.before!)}, its first request wrote ${formatTokens(s.rewritten)} to the cache` : `fork estimated at ${approxTokens(s.estimated!)}, not measured until its first request`
 
-      return `${i + 1}. ${plural(s.turns, 'turn')} · ${formatTokens(s.first)} → ${formatTokens(s.last)} (peak ${formatTokens(s.peak)})${fork}`
+      return s.turns === 0 && s.copied !== undefined ? `${i + 1}. ${fork}` : `${i + 1}. ${plural(s.turns, 'turn')} · ${formatTokens(s.first)} → ${formatTokens(s.last)} (peak ${formatTokens(s.peak)}) · ${fork}`
     }),
     '',
     `Billed tokens: ${formatTokens(total('uncached'))} uncached · ${formatTokens(total('written'))} cache writes · ${formatTokens(total('read'))} cache reads · ${formatTokens(total('output'))} output.`,

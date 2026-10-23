@@ -19,7 +19,7 @@ export const DAY = 86_400_000
 export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 
-export type World = { tokens?: number; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; agents?: { id: string; status: AgentStatus }[] }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; agents?: { id: string; status: AgentStatus }[] }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -64,8 +64,10 @@ export function world(on: On, w: World) {
     return { value: undefined }
   })
   on('process.spawn', async function* (_$, e) {
-    expect(e.argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', SRC])
-    const text = serializeTranscript(w.rows() as any)
+    const path = e.argv.at(-1)!
+    expect(e.argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', path])
+    // the session's own transcript, or a fork of it as written, then what the session wrote into it after the switch
+    const text = path === SRC ? serializeTranscript(w.rows() as any) : seen.writes[path] + serializeTranscript((w.appended ?? []) as any)
     const middle = Math.floor(text.length / 2) // a piece ends wherever the child's write did, mid-line included
     for (const piece of [text.slice(0, middle), text.slice(middle)]) if (piece !== '') yield { stream: 'stdout' as const, text: piece }
     yield { stream: 'stderr' as const, text: 'boom' }

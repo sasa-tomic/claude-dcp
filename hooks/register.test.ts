@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 import { CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
-import { emptyStats, recordFork } from './stats'
+import { emptyStats, recordFirstRequest, recordFork, type TurnUsage } from './stats'
 import { Transcript } from './rows.fixture'
 import { parseTranscript, serializeTranscript } from './transcript'
 
@@ -117,6 +117,21 @@ describe('tool.call tagging and nudges', () => {
     expect(contexts[1][0]).toMatch(/^<dcp-message-id>/)
   })
 
+  test('sends no nudge while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
+    world(on, { tokens: 160000, rows: () => conversation().rows, store: { 'stats:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) } })
+    await start($)
+    expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
+  })
+
+  test('sends no nudge while the conversation has no two answered requests to size its messages by', async ($, on) => {
+    const t = new Transcript()
+    t.prompt('goal', 'm0001')
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
+    world(on, { tokens: 160000, rows: () => t.rows })
+    await start($)
+    expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
+  })
+
   test('under the max limit, sends no nudge however many results followed the prompt', async ($, on) => {
     world(on, { tokens: 120000, rows: () => conversation().rows })
     await start($)
@@ -186,6 +201,9 @@ describe('compress tool', () => {
   })
 })
 
+const measured = (before: number, first: number) =>
+  recordFirstRequest(recordFork(emptyStats(), { before, estimated: 0, copied: 1, gone: [] }), { input_tokens: first, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
+
 describe('turn.complete', () => {
   async function queued($: any, on: On, rowsOf = () => conversation().rows, session?: { id: string; switchOnResume?: boolean }) {
     const w = world(on, { tokens: 100, rows: rowsOf, session })
@@ -229,11 +247,58 @@ describe('turn.complete', () => {
     expect(seen.statuses.filter(s => s?.startsWith('compressed'))).toEqual([])
     await clock.advance(1000)
     expect(seen.toasts).toHaveLength(1)
-    expect(seen.toasts[0]).toMatch(/^dcp: compressed 1 range\(s\), pruned 0 tool call\(s\): saved ~2\.\dk tokens \(conversation ~2\.\dk -> ~\d+ est\.\); context was 100$/)
-    expect(seen.statuses.at(-1)).toMatch(/^compressed: conversation ~2\.\dk -> ~\d+ est\. · saved ~2\.\dk so far$/)
+    expect(seen.toasts[0]).toMatch(/^dcp: compressed 1 range\(s\), pruned 0 tool call\(s\): ~2\.\dk removed \(estimated; measured at the next reply\)$/)
+    expect(seen.statuses.at(-1)).toMatch(/^compressed: ~2\.\dk removed \(estimated; measured at the next reply\) · saved 0 so far$/)
     expect(session.id).not.toBe(ID)
     expect(seen.writes[`${HOME}/.claude/dcp-status-${session.id}`]).toBe(seen.statuses.at(-1))
-    expect(seen.writes[LOG]).toContain('saved ~2.')
+    expect(seen.writes[LOG]).toMatch(/~2\.\dk removed \(estimated; measured at the next reply\), cache rewrite ~\d+/)
+    expect(seen.shell).toContainEqual(['rm', '-f', '--', STATUS])
+  })
+
+  const tailHeavy = () => {
+    const t = new Transcript()
+    t.prompt('goal', 'm0001')
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
+    t.call('Bash', { command: 'ls' }, { ref: 'm0003', output: 'B'.repeat(8000) })
+    t.text('all done')
+    return t
+  }
+
+  test('a fork that would remove far less than it makes the cache rewrite waits, queue and all', async ($, on) => {
+    const t = tailHeavy()
+    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'read' }])
+    await complete($)
+    await clock.advance(1000)
+    expect(clones(seen)).toEqual([])
+    expect(seen.resumes).toEqual([])
+    expect(seen.writes[LOG]).toMatch(/fork waits: it would remove ~\d+ and make the cache rewrite ~2\.\dk \(minRemovedShare 0\.5\)/)
+    await compress($, [{ startId: 'm0003', endId: 'm0003', summary: 'listing' }])
+    await complete($)
+    expect(clones(seen)).toHaveLength(1)
+  })
+
+  test('a fork of a conversation with no two answered requests to size it by fails loudly and does not switch', async ($, on) => {
+    const t = new Transcript()
+    t.prompt('goal', 'm0001')
+    t.text('all done')
+    const { seen } = world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'goal' }])
+    await complete($)
+    expect(seen.toasts.at(-1)).toBe('dcp: the conversation has no two consecutive answered requests to measure its tokens per character on')
+    expect(seen.resumes).toEqual([])
+  })
+
+  test('a fork over the max limit is made however little it removes', async ($, on) => {
+    const t = tailHeavy()
+    const { clock, seen } = world(on, { tokens: 160000, rows: () => t.rows })
+    await start($)
+    await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'read' }])
+    await complete($)
+    await clock.advance(1000)
+    expect(clones(seen)).toHaveLength(1)
   })
 
   test('puts the unsent draft back in the prompt box once the switch happened, not before', async ($, on) => {
@@ -269,38 +334,60 @@ describe('turn.complete', () => {
 
   test('reports growth when the summary is larger than what it replaces', async ($, on) => {
     const session = { id: ID, switchOnResume: true }
-    const { clock, seen } = world(on, { tokens: 100000, rows: () => conversation().rows, session })
+    const { clock, seen } = world(on, { tokens: 160000, rows: () => conversation().rows, session })
     await start($)
     await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'verbose '.repeat(500) }])
     await complete($)
     await clock.advance(1000)
-    expect(seen.toasts[0]).toMatch(/: grew ~\d+ tokens \(/)
-    expect(seen.statuses.at(-1)).toMatch(/saved ~-/)
+    expect(seen.toasts[0]).toMatch(/: ~\d+ added \(estimated/)
   })
 
-  test('keeps the saved total across the switch and for later turns of the fork', async ($, on) => {
+  const answered = (usage: Partial<TurnUsage>) => ({ type: 'assistant', uuid: 'new1', parentUuid: null, sessionId: 's', message: { id: 'new', role: 'assistant', content: [{ type: 'text', text: 'hi' }], usage } })
+  const turnUsage = (over: Partial<TurnUsage> = {}): TurnUsage => ({ input_tokens: 5, output_tokens: 7, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, ...over })
+
+  test("the first reply after the switch settles the fork from the API's count of its first request, and the total stays for later turns", async ($, on) => {
     const t = bigConversation()
     const session = { id: ID, switchOnResume: true }
-    const { clock, seen } = await queued($, on, () => t.rows, session)
+    const placeholder = { ...answered(turnUsage({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })), message: { id: 'synthetic', model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }], usage: turnUsage({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }) } }
+    const w = world(on, { tokens: 100, rows: () => t.rows, session, appended: [placeholder, answered(turnUsage())] })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
     await complete($)
-    await clock.advance(1000)
-    await complete($, 'anything')
-    expect(seen.statuses.at(-1)).toMatch(/^context 100 \/ 200\.0k \(0%\) · saved ~2\.\dk so far$/)
+    await w.clock.advance(1000)
+    await complete($, 'anything', turnUsage())
+    expect(w.seen.statuses.at(-1)).toBe('context 100 / 200.0k (0%) · saved 45 so far')
+    expect((await ($ as any).command.run({ command: 'dcp-stats', args: '' })).text).toContain('fork removed 45 of 100, its first request wrote 30 to the cache')
+    await complete($, 'again', turnUsage())
+    expect(w.seen.statuses.at(-1)).toBe('context 100 / 200.0k (0%) · saved 45 so far')
+  })
+
+  test('a counted reply with no answered request in the forked transcript is an error, not a guess', async ($, on) => {
+    const t = bigConversation()
+    const session = { id: ID, switchOnResume: true }
+    const w = world(on, { tokens: 100, rows: () => t.rows, session })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+    await complete($)
+    await w.clock.advance(1000)
+    const done = complete($, 'anything', turnUsage())
+    for (let i = 0; i < 10; i++) await w.clock.advance(500)
+    await done
+    expect(w.seen.toasts.at(-1)).toMatch(/^dcp: no answered request after the \d+ rows the fork copied$/)
   })
 
   test('with nothing queued, pins the real context size and the saving so far, per session', async ($, on) => {
-    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, store: { 'stats:old-id': recordFork(emptyStats(), { removed: 2500, gone: [] }), 'stats:other': recordFork(emptyStats(), { removed: 99999, gone: [] }) } })
+    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, store: { 'stats:old-id': measured(5000, 2500), 'stats:other': measured(999999, 1) } })
     await start($)
     await complete($)
-    expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved ~2.5k so far')
+    expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved 2.5k so far')
     expect(seen.writes[STATUS]).toBe(seen.statuses.at(-1))
   })
 
-  test('with nothing saved yet, shows ~0', async ($, on) => {
+  test('with nothing saved yet, shows 0', async ($, on) => {
     const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows })
     await start($)
     await complete($)
-    expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved ~0 so far')
+    expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved 0 so far')
   })
 
   test('with nothing queued and no response yet, pins nothing', async ($, on) => {
@@ -445,6 +532,31 @@ describe('classic.Stop', () => {
     const { block } = await stop($)
     expect(block).toContain('compress and merge')
     expect(block).not.toContain('VERY AGGRESSIVE')
+  })
+
+  test('lets the stop through while the conversation has no two answered requests to size its messages by', async ($, on) => {
+    const t = new Transcript()
+    t.prompt('goal', 'm0001')
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
+    const { seen } = world(on, { tokens: 160000, rows: () => t.rows })
+    await start($)
+    await $.tool.call({ tool: 'Read', file_path: '/x' })
+    expect((await stop($)).block).toBeUndefined()
+    expect(seen.toasts).toEqual([])
+  })
+
+  test('lets the stop through while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
+    await toolTurn($, on, 160000, { 'stats:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) })
+    expect((await stop($)).block).toBeUndefined()
+  })
+
+  test('asks again on a later prompt although an earlier compression still waits in the queue', async ($, on) => {
+    await toolTurn($, on, 160000)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'dropped' }])
+    expect((await stop($)).block).toBeUndefined()
+    await submit($)
+    await $.tool.call({ tool: 'Read', file_path: '/x' })
+    expect((await stop($)).block).toContain('VERY AGGRESSIVE')
   })
 
   test('lets the stop through when the hook already held it back once', async ($, on) => {

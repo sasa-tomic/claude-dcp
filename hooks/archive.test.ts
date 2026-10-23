@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { ARCHIVE, DAY, ID, OLD, OLDER, PROJECT, SRC, compress, complete, conversation, start, world } from './world.fixture'
+import { ARCHIVE, DAY, HOME, ID, OLD, OLDER, PROJECT, SRC, STATUS, compress, complete, conversation, start, world } from './world.fixture'
 
 const GOOD_ID = '33333333-3333-4333-8333-333333333333'
 
@@ -20,7 +20,8 @@ describe('archiving after a fork', () => {
     expect(seen.shell).toEqual([
       ['mkdir', '-p', ARCHIVE],
       ['mv', SRC, `${ARCHIVE}/`],
-      ['rm', '-rf', '--', `${ARCHIVE}/${OLDER}.jsonl`, `${ARCHIVE}/${OLDER}`],
+      ['rm', '-rf', '--', `${ARCHIVE}/${OLDER}.jsonl`, `${ARCHIVE}/${OLDER}`, `${HOME}/.claude/dcp-status-${OLDER}`],
+      ['rm', '-f', '--', STATUS],
     ])
     expect(files.has(SRC)).toBe(false)
     expect(files.has(`${ARCHIVE}/${ID}.jsonl`)).toBe(true)
