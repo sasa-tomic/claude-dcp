@@ -146,7 +146,7 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
   }
 }
 
-type State = { nextRef: number; toolsSincePrompt: number; sinceLimitNudge: number; queuedThisTurn: boolean; pruning: boolean }
+type State = { nextRef: number; seeded: boolean; toolsSincePrompt: number; sinceLimitNudge: number; queuedThisTurn: boolean; pruning: boolean }
 
 const resetNudges = (state: State) => Object.assign(state, { toolsSincePrompt: 0, sinceLimitNudge: Infinity })
 
@@ -375,6 +375,21 @@ async function projectDir($: Dollar): Promise<string> {
   return path.slice(0, path.lastIndexOf('/'))
 }
 
+/** The next message id, continuing after the highest one in the session's transcript. The transcript is read at the first tag
+    that finds it, not at session start, when a resumed session's file may not be resolvable yet; a new session has none. */
+async function nextMessageRef($: Dollar, state: State): Promise<string> {
+  if (!state.seeded) {
+    const id = await $.session.id()
+    const path = await findTranscript($, id)
+    if (path) {
+      state.nextRef = Math.max(state.nextRef, indexRows(await readTranscript($, path)).maxMessageRef)
+      state.seeded = true
+    } else await log($, `no transcript for session ${id} yet: numbering messages from ${state.nextRef + 1}`)
+  }
+
+  return messageRef(++state.nextRef)
+}
+
 async function startSession($: Dollar, state: State) {
   resetNudges(state)
   await $.command.register({ name: 'dcp-archive', description: 'List sessions dcp archived after compressing' })
@@ -387,13 +402,11 @@ async function startSession($: Dollar, state: State) {
     inputSchema: INPUT_SCHEMA,
     isDeferred: false,
   })
-  const path = await findTranscript($, await $.session.id())
-  state.nextRef = Math.max(state.nextRef, path ? indexRows(await readTranscript($, path)).maxMessageRef : 0)
 }
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, toolsSincePrompt: 0, sinceLimitNudge: Infinity, queuedThisTurn: false, pruning: false }
+  const state: State = { nextRef: 0, seeded: false, toolsSincePrompt: 0, sinceLimitNudge: Infinity, queuedThisTurn: false, pruning: false }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state)
@@ -412,7 +425,7 @@ export const register: Register = (on, options) => {
     resetNudges(state)
     state.queuedThisTurn = false
 
-    return next({ ...e, context: [...(e.context ?? []), tagLine(messageRef(++state.nextRef)).trim()] })
+    return next({ ...e, context: [...(e.context ?? []), tagLine(await nextMessageRef($, state)).trim()] })
   })
 
   on('tool.call', async ($, e, next) => {
@@ -432,7 +445,7 @@ export const register: Register = (on, options) => {
     state.sinceLimitNudge++
     const nudges = await reported($, () => computeNudges($, config, state))
 
-    return { ...result, context: [...(result.context ?? []), ...nudges, tagLine(messageRef(++state.nextRef)).trim()] }
+    return { ...result, context: [...(result.context ?? []), ...nudges, tagLine(await nextMessageRef($, state)).trim()] }
   })
 
   on('command.run', { command: 'dcp-archive' }, async $ => answer($, async () => listArchive($, await projectDir($))))

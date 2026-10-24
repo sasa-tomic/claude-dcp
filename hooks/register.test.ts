@@ -26,10 +26,20 @@ describe('session.start', () => {
     expect(await submit($)).toMatchObject({ text: 'hi', context: ['<dcp-message-id>m0004</dcp-message-id>'] })
   })
 
+  test('continues after the highest id when the transcript could not be found at session start but exists by the first prompt', async ($, on) => {
+    const w: World = { rows: () => conversation().rows, exists: false }
+    world(on, w)
+    await start($)
+    w.exists = true
+    expect(await submit($)).toMatchObject({ context: ['<dcp-message-id>m0004</dcp-message-id>'] })
+    expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toContain('<dcp-message-id>m0005</dcp-message-id>')
+  })
+
   test('starts numbering at 1 for a session without a transcript yet', async ($, on) => {
-    world(on, { rows: () => [], exists: false })
+    const { seen } = world(on, { rows: () => [], exists: false })
     await start($)
     expect(await submit($)).toMatchObject({ text: 'hi', context: ['<dcp-message-id>m0001</dcp-message-id>'] })
+    expect(seen.writes[LOG]).toContain('no transcript for session old-id yet: numbering messages from 1')
   })
 })
 
