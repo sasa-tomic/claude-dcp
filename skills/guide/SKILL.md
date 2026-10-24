@@ -22,7 +22,7 @@ Start with `~/.claude/dcp.log` (last 200 lines; errors also toast). Then the ses
 
 | Symptom | Cause and check |
 | --- | --- |
-| No compress tool | Plugin not enabled (`claude plugin list`), or the session predates the install (`/reload-plugins`). |
+| No compress tool | Plugin not enabled (`claude plugin list`), the session predates the install (`/reload-plugins`), or it is headless (`claude -p`, SDK): see Headless in `README.md`. |
 | `startId … is not available in the current conversation context` | The ID is not in the transcript: already compressed away, mistyped, or the transcript still lags (retried 10 × 500 ms first). |
 | `Overlapping ranges …` | Two ranges, in one call or queued in the same turn, share rows. |
 | Stop never held back | `classic.Stop` skips when `stop_hook_active`, a compress is already queued, no real token figure exists yet, or the context is under the min with no tool result since the prompt. |
@@ -46,4 +46,4 @@ Module map is in `hooks/`: `register.ts` wires events; `compress.ts` plans range
 - A helper that takes `$` must be a top-level function: the validator rejects a closure that receives `$`.
 - `$.store` is shared by every session on the machine: key per-session values by session id (the compress queue is), and never keep a "pending" marker in it — a stale one from a non-interactive run once made fresh sessions report a switch that never happened.
 - Row layout facts the code relies on (verified on 2.1.303, internal and version-dependent): every tag is a `hook_additional_context` attachment row (`hookName` `prompt.submit` after a prompt's user row, `tool.call` after a `tool_result` row, whose `toolUseID` is the call id plus `-context`); only summary blocks carry their tag as the last line of a user row's text; an assistant message may span several rows sharing `message.id`. Re-verify with a `claude -p` run in a scratch directory before changing them.
-- Hands-on checks after a change: `claude -p … --plugin-dir <plugin>` in a scratch directory for the non-interactive path, and a tmux-driven `claude --plugin-dir <plugin>` for the interactive switch. Unit tests alone proved insufficient here.
+- Hands-on checks after a change: `DCP_HEADLESS=1 claude -p … --plugin-dir <plugin>` in a scratch directory for the non-interactive path (without the variable dcp is off there), and a tmux-driven `claude --plugin-dir <plugin>` for the interactive switch. Unit tests alone proved insufficient here.
