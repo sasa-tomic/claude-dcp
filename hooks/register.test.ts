@@ -20,6 +20,24 @@ describe('session.start', () => {
     expect(spec.inputSchema.properties.content.items.required).toEqual(['startId', 'endId', 'summary'])
   })
 
+  test('a headless run (-p, SDK) gets no tool, system prompt, id tag or stop hold-back unless DCP_HEADLESS=1', async ($, on) => {
+    const { seen } = world(on, { tokens: 30000, rows: () => conversation().rows })
+    await start($, false)
+    await $.tool.call({ tool: 'Read', file_path: '/x' })
+    const { sections } = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] })
+    expect(seen.tools).toEqual([])
+    expect(seen.commands).toEqual([])
+    expect(sections.map((s: any) => s.id)).toEqual(['base'])
+    expect((await submit($)).context).toBeUndefined()
+    expect((await $.classic.Stop({ stop_hook_active: false })).block).toBeUndefined()
+  })
+
+  test('DCP_HEADLESS=1 makes a headless run use dcp as an interactive one does', async ($, on) => {
+    const { seen } = world(on, { rows: () => conversation().rows, env: { DCP_HEADLESS: '1' } })
+    await start($, false)
+    expect(seen.tools.map((t: any) => t.name)).toEqual(['compress'])
+  })
+
   test('continues message numbering after the highest id in an existing transcript', async ($, on) => {
     world(on, { rows: () => conversation().rows })
     await start($)
@@ -63,6 +81,7 @@ describe('finding the transcript', () => {
 describe('prompt.compose', () => {
   test('adds the DCP system prompt with the registered tool name and protected tools after the base prompt', async ($, on) => {
     world(on, { rows: () => [] })
+    await start($)
     const { sections } = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
     const dcp = sections.at(-1)!
     expect(sections[0].id).toBe('base')
@@ -524,7 +543,7 @@ describe('/dcp-prune', () => {
     expect((await prune($, ' the audit work ')).text).toBe('Asked the model to compress closed work.')
     await clock.advance(1000)
     expect(seen.prompts).toEqual([expect.stringContaining('one mcp__dcp__compress call')])
-    expect(seen.prompts[0]).toContain('Focus: the audit work Then')
+    expect(seen.prompts[0]).toContain('Focus: the audit work')
   })
 
   test('reports a refused submit loudly and drops the request', async ($, on) => {
@@ -592,6 +611,7 @@ describe('classic.Stop', () => {
     expect(block).toContain('max 200 chars')
     expect(block).toContain('mcp__dcp__compress')
     expect(block).toContain('Largest uncompressed messages')
+    expect(block).toContain('repeat your last answer verbatim')
     expect(block).not.toContain('VERY AGGRESSIVE')
   })
 

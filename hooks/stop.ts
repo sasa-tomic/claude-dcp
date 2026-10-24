@@ -5,7 +5,7 @@ export type StopTier = 'drop' | 'compress' | 'aggressive'
 /** Below min only dead weight is dropped; from min, the largest chunks are paraphrased; above max everything not needed next goes. */
 export const stopTier = (tokens: number, min: number, max: number): StopTier => (tokens < min ? 'drop' : tokens <= max ? 'compress' : 'aggressive')
 
-const REPLY = 'Then reply "ok" only.'
+const REPLY = 'After the call, repeat your last answer verbatim: the caller reads only your final message.'
 
 export const stopPrompt = (tier: StopTier, toolName: string): string =>
   ({

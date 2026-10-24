@@ -41,15 +41,15 @@ describe('limitNudge', () => {
 })
 
 describe('prunePrompt', () => {
-  test('asks for one dense compress call and a bare ok, naming the tool', () => {
+  test('asks for one dense compress call and no extra text, naming the tool', () => {
     const text = prunePrompt(TOOL, '')
     expect(text).toContain(`one ${TOOL} call`)
     expect(text).toContain('Dense summaries')
-    expect(text.endsWith('Then reply "ok" only.')).toBe(true)
+    expect(text.endsWith('Write no text before or after the call.')).toBe(true)
     expect(text).not.toContain('Focus')
   })
 
   test('puts the hint in before the closing instruction', () => {
-    expect(prunePrompt(TOOL, 'the audit work')).toContain('Focus: the audit work Then reply "ok" only.')
+    expect(prunePrompt(TOOL, 'the audit work')).toContain('Focus: the audit work Write no text before or after the call.')
   })
 })

@@ -19,12 +19,12 @@ export const DAY = 86_400_000
 export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; agents?: { id: string; status: AgentStatus }[] }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; env?: Record<string, string>; agents?: { id: string; status: AgentStatus }[] }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
   mock.store(on, w.store)
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, ...w.env })
   const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], shell: [] as string[][], commands: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
@@ -135,7 +135,7 @@ export function conversation() {
 }
 export const clones = (seen: { writes: Record<string, string> }) => Object.keys(seen.writes).filter(p => p.endsWith('.jsonl'))
 export const complete = ($: any, answer = 'all done', usage?: unknown) => $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage })
-export const start = ($: any) => $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+export const start = ($: any, isInteractive = true) => $.session.start({ cwd: CWD, surface: isInteractive ? 'terminal' : null, isInteractive })
 export const submit = ($: any, text = 'hi', extra = {}) => $.prompt.submit({ text, ...extra })
 export const compress = ($: any, content: unknown[]) => $.tool.call({ tool: TOOL, topic: 'T', content })
 

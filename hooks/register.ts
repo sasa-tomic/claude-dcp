@@ -146,7 +146,7 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
   }
 }
 
-type State = { nextRef: number; seeded: boolean; toolsSincePrompt: number; sinceLimitNudge: number; queuedThisTurn: boolean; pruning: boolean }
+type State = { nextRef: number; seeded: boolean; toolsSincePrompt: number; sinceLimitNudge: number; queuedThisTurn: boolean; pruning: boolean; active: boolean }
 
 const resetNudges = (state: State) => Object.assign(state, { toolsSincePrompt: 0, sinceLimitNudge: Infinity })
 
@@ -390,7 +390,10 @@ async function nextMessageRef($: Dollar, state: State): Promise<string> {
   return messageRef(++state.nextRef)
 }
 
-async function startSession($: Dollar, state: State) {
+/** A `-p` or SDK run never uses the compressed session, so it pays no tokens for dcp unless DCP_HEADLESS=1 asks for it. */
+async function startSession($: Dollar, state: State, isInteractive: boolean) {
+  state.active = isInteractive || (await $.env.get('DCP_HEADLESS')) === '1'
+  if (!state.active) return
   resetNudges(state)
   await $.command.register({ name: 'dcp-archive', description: 'List sessions dcp archived after compressing' })
   await $.command.register({ name: 'dcp-restore', description: 'Restore an archived session for /resume', argumentHint: '<session id>' })
@@ -406,22 +409,23 @@ async function startSession($: Dollar, state: State) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, seeded: false, toolsSincePrompt: 0, sinceLimitNudge: Infinity, queuedThisTurn: false, pruning: false }
+  const state: State = { nextRef: 0, seeded: false, toolsSincePrompt: 0, sinceLimitNudge: Infinity, queuedThisTurn: false, pruning: false, active: false }
 
   on('session.start', async ($, e, next) => {
-    await startSession($, state)
+    await startSession($, state, e.isInteractive)
 
     return next(e)
   })
 
   on('prompt.compose', async ($, e, next) => {
+    if (!state.active) return next(e)
     const { sections } = await next(e)
 
     return { sections: [...sections, { id: 'dcp:system', text: systemPrompt(FULL_TOOL_NAME, config.protectedTools), scope: 'session' as const }] }
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.command || e.isMeta) return next(e)
+    if (!state.active || e.command || e.isMeta) return next(e)
     resetNudges(state)
     state.queuedThisTurn = false
 
@@ -429,6 +433,7 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
+    if (!state.active) return next(e)
     if (e.agentId !== undefined) return e.tool === FULL_TOOL_NAME ? { deny: `${FULL_TOOL_NAME} is for the main conversation only; a subagent's messages carry no ids.` } : next(e)
     let result
     if (e.tool !== FULL_TOOL_NAME) await noteCall($, e.tool, e)
@@ -486,7 +491,7 @@ export const register: Register = (on, options) => {
 
   on('classic.Stop', async ($, e, next) => {
     const result = await next(e)
-    if (e.stop_hook_active) return result
+    if (!state.active || e.stop_hook_active) return result
     const block = await reported($, () => stopReason($, config, state))
 
     return block === undefined ? result : { ...result, block }
@@ -494,7 +499,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined) return result
+    if (!state.active || e.agentId !== undefined) return result
     await reported($, () => recordTurnStats($, e.usage))
     await showStatus($)
     if (e.reason !== 'answer') return result
