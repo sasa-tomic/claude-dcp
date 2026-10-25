@@ -624,7 +624,9 @@ describe('classic.Stop', () => {
 
   test('above the max limit, asks to be very aggressive', async ($, on) => {
     await toolTurn($, on, 150001)
-    expect((await stop($)).block).toContain('VERY AGGRESSIVE')
+    const { block } = await stop($)
+    expect(block).toContain('VERY AGGRESSIVE')
+    expect(block).toContain('especially from the 2-3 most recent turns')
   })
 
   test('the max limit is raised by the tokens the active summaries hold', async ($, on) => {

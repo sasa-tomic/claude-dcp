@@ -13,6 +13,12 @@ describe('systemPrompt', () => {
     expect(text).not.toMatch(/\n\n\n/)
   })
 
+  test('steers ranges to start and end at tool outputs, leaving prompts and final answers outside', () => {
+    const text = systemPrompt(TOOL, [])
+    expect(text).toContain('Never compress user prompts or the final answer of a turn')
+    expect(text).toContain('start and end each range at tool-output ids')
+  })
+
   test('adds no protected-tools paragraph without protected tools', () => {
     expect(systemPrompt(TOOL, [])).not.toContain('The environment keeps')
   })

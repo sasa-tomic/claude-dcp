@@ -3,6 +3,7 @@ export function systemPrompt(tool: string, protectedTools: readonly string[]): s
     `Your context window is finite. ${tool} is your only context tool: it swaps a span of the conversation for a summary you write.`,
     'Messages and tool results carry <dcp-message-id> tags, and the environment adds <dcp-system-reminder> blocks. Both are injected metadata; never write them yourself.',
     'Compress a span once it is finished: research with settled findings, work that is implemented and verified, exploration that ended, dead ends. Leave what the next steps need verbatim: files being edited, exact errors, text you will quote, work in progress.',
+    'Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Never compress user prompts or the final answer of a turn: start and end each range at tool-output ids, so the prompt before and the answer after stay in the context.',
     'For each span ask: can I continue with only its summary? If so, compress it now instead of waiting for a limit.',
   ]
   if (protectedTools.length > 0)
