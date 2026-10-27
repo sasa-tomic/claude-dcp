@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { indexRows } from './model'
-import { answeredRequests, approxTokens, blockReport, formatTokens, messageReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
+import { answeredRequests, approxTokens, blockReport, callLabel, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
 import { Transcript } from './rows.fixture'
 
 describe('resolveLimit', () => {
@@ -98,17 +98,52 @@ describe('reports', () => {
     expect(text).toContain('Merging is lossy and permanent.')
   })
 
-  test('message report names the largest uncompressed messages with their tool output counts', () => {
+  test('history report lists each user turn as a ready range with its size, prompt and tools, then the largest messages', () => {
     const t = new Transcript()
-    t.prompt('small', 'm0001')
-    t.call('Read', {}, { ref: 'm0002', output: 'x'.repeat(8000) })
-    t.call('Bash', {}, { ref: 'm0003', output: 'y'.repeat(400) })
+    t.prompt('read the config', 'm0001')
+    t.call('Read', { file_path: '/etc/app.conf' }, { ref: 'm0002', output: 'x'.repeat(8000) })
+    t.call('Bash', { command: 'ls', description: 'List files' }, { ref: 'm0003', output: 'y'.repeat(400) })
+    t.call('Read', { file_path: '/b' }, { ref: 'm0004' })
     t.block(1, 'summary text')
-    const text = messageReport(t.rows, indexRows(t.rows), 0.25)
-    expect(text.split('\n')[0]).toContain('Largest uncompressed messages')
-    expect(text).toMatch(/^- m0002 assistant ~2\.\dk, 1 tool output$/m)
-    expect(text.indexOf('m0002')).toBeLessThan(text.indexOf('m0003'))
+    t.prompt('now fix it', 'm0005')
+    const text = historyReport(t.rows, indexRows(t.rows), 0.25)
+    expect(text).toMatch(/^- m0001\.\.m0004 ~2\.\dk "read the config"; Read×2, Bash$/m)
+    expect(text).toMatch(/^- m0005 ~\d+ "now fix it"$/m)
+    expect(text).toMatch(/^- m0002 ~2\.\dk Read: \/etc\/app\.conf$/m)
+    expect(text).toMatch(/^- m0003 ~\d+ Bash: List files$/m)
     expect(text).not.toContain('b1')
+  })
+
+  test('history report breaks a turn at a compressed block, so no listed range spans one', () => {
+    const t = new Transcript()
+    t.prompt('go', 'm0001')
+    t.block(1, 'summary text')
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002' })
+    expect(historyReport(t.rows, indexRows(t.rows), 0.25)).toMatch(/^- m0002 ~\d+ \(continued\); Read$/m)
+  })
+
+  test('history report counts a row shared by parallel calls of one message once', () => {
+    const t = new Transcript()
+    t.prompt('go', 'm0001')
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'x'.repeat(4000), msg: 'A' })
+    t.call('Read', { file_path: '/b' }, { ref: 'm0003', output: 'y'.repeat(4000), msg: 'A' })
+    const text = historyReport(t.rows, indexRows(t.rows), 0.25)
+    const size = (ref: string) => Number(new RegExp(`^- ${ref} ~(\\d+\\.\\d)k`, 'm').exec(text)![1])
+    expect(Math.abs(size('m0002') - size('m0003'))).toBeLessThan(0.1)
+  })
+
+  test('history report folds turns past the listed count into one line', () => {
+    const t = new Transcript()
+    for (let i = 1; i <= 17; i++) t.prompt(`p${i}`, `m${String(i).padStart(4, '0')}`)
+    expect(historyReport(t.rows, indexRows(t.rows), 0.25)).toMatch(/^- \.\.\. 2 smaller turns, ~\d+ together$/m)
+  })
+
+  test('callLabel prefers the description, then the file, pattern or command, flattened and cut', () => {
+    const call = (input: Record<string, any>) => ({ id: 'c', name: 'Bash', input, useRow: 0, isError: false, resultText: '', turn: 1 })
+    expect(callLabel(call({ description: 'Run tests', command: 'make' }))).toBe('Bash: Run tests')
+    expect(callLabel(call({ command: 'a\n  b' }))).toBe('Bash: a b')
+    expect(callLabel(call({ command: 'x'.repeat(60) }))).toBe(`Bash: ${'x'.repeat(47)}…`)
+    expect(callLabel(call({}))).toBe('Bash')
   })
 
   test('sizes follow the measured rate', () => {
@@ -117,12 +152,12 @@ describe('reports', () => {
     const t = new Transcript()
     t.prompt('small', 'm0001')
     t.call('Read', {}, { ref: 'm0002', output: 'x'.repeat(8000) })
-    expect(messageReport(t.rows, indexRows(t.rows), 0.5)).toMatch(/^- m0002 assistant ~4\.\dk, 1 tool output$/m)
+    expect(historyReport(t.rows, indexRows(t.rows), 0.5)).toMatch(/^- m0002 ~4\.\dk Read$/m)
   })
 
-  test('message report is empty when nothing is uncompressed', () => {
+  test('history report is empty when nothing is uncompressed', () => {
     const t = new Transcript()
     t.block(1, 'only a summary')
-    expect(messageReport(t.rows, indexRows(t.rows), 0.25)).toBe('')
+    expect(historyReport(t.rows, indexRows(t.rows), 0.25)).toBe('')
   })
 })

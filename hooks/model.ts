@@ -4,7 +4,8 @@ import type { Row } from './rows'
 export const COMPRESSED_BLOCK_HEADER = '[Compressed conversation section]'
 const CONTEXT_SUFFIX = '-context'
 
-export type Unit = { start: number; end: number }
+/** Rows `start..end` that one id covers; a tool result's id also names its call. */
+export type Unit = { start: number; end: number; call?: ToolCall }
 export type ToolCall = {
   id: string
   name: string
@@ -32,6 +33,8 @@ export const promptText = (row: Row): string | null => {
   if (!Array.isArray(content) || content.length === 0 || !content.every((b: Row) => b.type === 'text')) return null
   return content.map((b: Row) => b.text).join('')
 }
+
+export const isQueuedCommand = (row: Row) => row.type === 'attachment' && row.attachment?.type === 'queued_command'
 
 /** The id carried by a hook_additional_context attachment that this plugin added to a prompt or a tool result, else null. */
 export function tagOf(row: Row): string | null {
@@ -82,7 +85,8 @@ export function indexRows(rows: readonly Row[]): Index {
     if (prior) throw new Error(`message id ${ref} appears at rows ${prior.end} and ${unit.end}`)
     units.set(ref, unit)
   }
-  let lastPrompt = -1
+  // the prompt a prompt.submit tag closes: a typed prompt row, or a queued command (a task notification) the turn took in
+  let open = -1
   rows.forEach((row, i) => {
     const text = promptText(row)
     if (text !== null) {
@@ -90,19 +94,21 @@ export function indexRows(rows: readonly Row[]): Index {
       if (blockRef) {
         claim(blockRef, { start: i, end: i })
         blocks.set(Number(blockRef.slice(1)), { row: i, summary: text })
-      } else lastPrompt = i
+      } else open = i
       return
     }
+    if (isQueuedCommand(row)) open = i
     const tag = tagOf(row)
     if (!tag?.startsWith('m')) return
     if (row.attachment.hookName === 'prompt.submit') {
-      if (lastPrompt < 0) throw new Error(`message id ${tag} at row ${i} has no prompt before it`)
-      claim(tag, { start: lastPrompt, end: i })
+      if (open < 0) throw new Error(`message id ${tag} at row ${i} has no prompt before it`)
+      claim(tag, { start: open, end: i })
+      open = -1
       return
     }
     const call = callById.get(String(row.attachment.toolUseID).replace(new RegExp(`${CONTEXT_SUFFIX}$`), ''))
     if (!call) throw new Error(`message id ${tag} at row ${i} names no tool call`)
-    claim(tag, { start: messageStart(rows, call.useRow), end: i })
+    claim(tag, { start: messageStart(rows, call.useRow), end: i, call })
   })
 
   const refNumbers = [...units.keys()].filter(r => r.startsWith('m')).map(r => Number(r.slice(1)))

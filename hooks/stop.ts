@@ -1,4 +1,6 @@
 export const STUB_MAX_CHARS = 200
+/** What the stub rule enforces: the asked length with room for a model's miscount, so a stub a few characters over is not a wasted call. */
+export const STUB_LIMIT_CHARS = 300
 
 export type StopTier = 'drop' | 'compress' | 'aggressive'
 

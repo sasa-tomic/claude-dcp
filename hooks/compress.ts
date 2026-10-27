@@ -104,6 +104,32 @@ export function assertDisjoint(spans: readonly Span[]): void {
   if (issues.length > 0) throw new PlanError(bullets(issues))
 }
 
+/** A range queued for the next fork: rows `s..e` of the transcript it was planned on. */
+export type Queued = { entry: Entry; s: number; e: number }
+
+const span = (q: { entry: Entry }) => `${q.entry.startId}..${q.entry.endId}`
+
+/** Folds a call's ranges into those queued by earlier calls and not yet applied: a range inside a queued one adds nothing, a range
+    covering queued ones (or the same rows, with a new summary) replaces them, and a partial overlap is refused. `notes` tells the model what was skipped or replaced. */
+export function mergeQueue(queued: readonly Queued[], fresh: readonly Span[]): { queue: Queued[]; notes: string[] } {
+  let queue = [...queued]
+  const notes: string[] = []
+  for (const p of fresh) {
+    const outer = queue.find(q => q.s <= p.s && p.e <= q.e && !(q.s === p.s && q.e === p.e))
+    if (outer) {
+      notes.push(`${span(p)} skipped: it lies inside ${span(outer)}, already queued`)
+      continue
+    }
+    const inner = queue.filter(q => p.s <= q.s && q.e <= p.e)
+    const partial = queue.find(q => !inner.includes(q) && q.s <= p.e && p.s <= q.e)
+    if (partial)
+      throw new PlanError(`content[${p.index}] (${span(p)}) partly overlaps ${span(partial)}, queued by an earlier call and not applied yet. Cover all of ${span(partial)} to replace it, or none of it.`)
+    notes.push(...inner.map(q => `${span(p)} replaces ${span(q)}, queued earlier`))
+    queue = [...queue.filter(q => !inner.includes(q)), { entry: p.entry, s: p.s, e: p.e }]
+  }
+  return { queue, notes }
+}
+
 function countMessages(rows: readonly Row[], s: number, e: number): number {
   const seen = new Set<string>()
   rows.slice(s, e + 1).forEach((row, i) => {

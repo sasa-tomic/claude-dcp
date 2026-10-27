@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { type CompressConfig, planCompression } from './compress'
+import { type CompressConfig, mergeQueue, planCompression } from './compress'
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
 
@@ -132,5 +132,40 @@ describe('protected content', () => {
 
   test('adds nothing when the options are off and no protected tool ran', () => {
     expect(plan(session(), [range('m0001', 'm0004')])[0].finalSummary).toBe('S')
+  })
+})
+
+describe('mergeQueue', () => {
+  const q = (startId: string, endId: string, s: number, e: number, index = 0) => ({ index, entry: range(startId, endId), s, e })
+  const queued = [q('m0010', 'm0020', 10, 20)]
+
+  test('adds a range disjoint from the queued ones', () => {
+    const { queue, notes } = mergeQueue(queued, [q('m0021', 'm0030', 21, 30)])
+    expect(queue.map(r => r.entry.startId)).toEqual(['m0010', 'm0021'])
+    expect(notes).toEqual([])
+  })
+
+  test('skips a range inside a queued one, saying where it already is', () => {
+    const { queue, notes } = mergeQueue(queued, [q('m0012', 'm0018', 12, 18)])
+    expect(queue).toEqual(queued)
+    expect(notes).toEqual(['m0012..m0018 skipped: it lies inside m0010..m0020, already queued'])
+  })
+
+  test('replaces the queued ranges a new range covers', () => {
+    const { queue, notes } = mergeQueue([...queued, q('m0025', 'm0026', 25, 26)], [q('m0005', 'm0030', 5, 30)])
+    expect(queue.map(r => [r.s, r.e])).toEqual([[5, 30]])
+    expect(notes).toEqual(['m0005..m0030 replaces m0010..m0020, queued earlier', 'm0005..m0030 replaces m0025..m0026, queued earlier'])
+  })
+
+  test('replaces a queued range given again with a new summary', () => {
+    const { queue, notes } = mergeQueue(queued, [q('m0010', 'm0020', 10, 20)])
+    expect(queue).toEqual([q('m0010', 'm0020', 10, 20)].map(({ entry, s, e }) => ({ entry, s, e })))
+    expect(notes).toEqual(['m0010..m0020 replaces m0010..m0020, queued earlier'])
+  })
+
+  test('refuses a partial overlap, naming the queued range apart from this call\'s entries', () => {
+    expect(() => mergeQueue(queued, [q('m0021', 'm0022', 21, 22), q('m0015', 'm0025', 15, 25, 1)])).toThrow(
+      'content[1] (m0015..m0025) partly overlaps m0010..m0020, queued by an earlier call and not applied yet. Cover all of m0010..m0020 to replace it, or none of it.',
+    )
   })
 })

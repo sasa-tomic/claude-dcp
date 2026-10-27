@@ -8,15 +8,21 @@ describe('refs', () => {
     expect(blockRef(12)).toBe('b12')
   })
 
-  test('rejects message numbers outside 1..9999 and invalid block numbers', () => {
-    expect(() => messageRef(0)).toThrow('outside 1-9999')
-    expect(() => messageRef(10000)).toThrow('outside 1-9999')
+  test('grows past four digits instead of running out at m9999', () => {
+    expect(messageRef(10000)).toBe('m10000')
+    expect(parseRef('m10000')).toEqual({ ref: 'm10000', number: 10000 })
+    expect(trailingRef(`x${tagLine('m10000')}`)).toBe('m10000')
+  })
+
+  test('rejects invalid message and block numbers', () => {
+    expect(() => messageRef(0)).toThrow('Invalid message number: 0')
     expect(() => blockRef(0)).toThrow('Invalid block number')
   })
 
   test('parses refs case-insensitively and rejects everything else', () => {
     expect(parseRef(' M0012 ')).toEqual({ ref: 'm0012', number: 12 })
     expect(parseRef('b3')).toEqual({ ref: 'b3', block: 3 })
+    expect(parseRef('m00012')).toBeNull() // one spelling per id: no padding past four digits
     for (const bad of ['m12', 'm0000', 'b0', 'x1', '', '<dcp-message-id>m0001</dcp-message-id>']) expect(parseRef(bad)).toBeNull()
   })
 })

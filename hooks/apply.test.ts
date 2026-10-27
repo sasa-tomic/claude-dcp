@@ -68,11 +68,12 @@ describe('applyCompression', () => {
     expect(out.flatMap(r => tagOf(r) ?? [])).toEqual(['m0001', 'm0004'])
   })
 
-  test('also removes the stale token-count reminders inside the range, and keeps other system attachments and reminders outside it', () => {
+  test('also removes the stale token-count reminders and task notifications inside the range, and keeps other system attachments and reminders outside it', () => {
     const t = session()
     const reminder = (uuid: string) => ({ ...t.rows[0], uuid, type: 'attachment', attachment: { type: 'total_tokens_reminder', content: 'x' } })
     const skills = { ...t.rows[0], uuid: 'skills', type: 'attachment', attachment: { type: 'skill_listing', content: 'big listing' } }
-    t.rows.splice(5, 0, reminder('r-in'), skills) // inside the range: between the assistant call and its result
+    const notice = { ...t.rows[0], uuid: 'n-in', type: 'attachment', attachment: { type: 'queued_command', prompt: '<task-notification>done</task-notification>' } }
+    t.rows.splice(5, 0, reminder('r-in'), skills, notice) // inside the range: between the assistant call and its result
     t.rows.push(reminder('r-after'))
     const idx = indexRows(t.rows)
     const [s, e] = [2, idx.units.get('m0003')!.end]
@@ -81,6 +82,7 @@ describe('applyCompression', () => {
     expect(kept).toContain('skill_listing:skills')
     expect(kept).toContain('total_tokens_reminder:r-after')
     expect(kept).not.toContain('total_tokens_reminder:r-in')
+    expect(kept).not.toContain('queued_command:n-in')
   })
 
   test('allocates block ids after the highest existing one, in range order, and drops consumed block rows', () => {

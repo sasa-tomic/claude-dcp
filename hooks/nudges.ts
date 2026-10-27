@@ -1,5 +1,5 @@
 import { blockRef } from './ids'
-import { COMPRESSED_BLOCK_HEADER, type Block, type Index, promptText } from './model'
+import { COMPRESSED_BLOCK_HEADER, type Block, type Index, type ToolCall, type Unit, isQueuedCommand, promptText } from './model'
 import type { Row } from './rows'
 import type { TurnUsage } from './stats'
 
@@ -87,21 +87,75 @@ export function blockReport(blocks: ReadonlyMap<number, Block>, scale: number): 
   ].join('\n')
 }
 
-export function messageReport(rows: readonly Row[], idx: Index, scale: number): string {
-  const sized = [...idx.units]
+const LISTED_TURNS = 15
+const LABEL_CHARS = 48
+
+const oneLine = (text: string) => {
+  const flat = text.replace(/<dcp-message-id>[^<]*<\/dcp-message-id>/g, '').replace(/\s+/g, ' ').trim()
+  return flat.length > LABEL_CHARS ? `${flat.slice(0, LABEL_CHARS - 1)}…` : flat
+}
+
+/** A few words on what a tool call did, from its arguments: the description the model gave it, else the file, pattern or command. */
+export function callLabel(call: ToolCall): string {
+  const { description, file_path, path, pattern, command, url, query, prompt } = call.input
+  const detail = [description, file_path, pattern, command, url, query, path, prompt].find(v => typeof v === 'string' && v.trim() !== '')
+  return detail === undefined ? call.name : `${call.name}: ${oneLine(detail)}`
+}
+
+type Sized = { ref: string; unit: Unit; chars: number }
+
+/** Each m-unit with the characters of the rows it covers; a row two units cover (parallel calls of one message) counts for the first to end. */
+function sizedUnits(rows: readonly Row[], idx: Index): Sized[] {
+  const owned = new Set<number>()
+  return [...idx.units]
     .filter(([ref]) => ref.startsWith('m'))
+    .sort((a, b) => a[1].end - b[1].end)
     .map(([ref, unit]) => {
-      const span = rows.slice(unit.start, unit.end + 1)
-      const chars = rowChars(span)
-      const results = span.reduce((sum, row) => sum + (Array.isArray(row.message?.content) ? row.message.content.filter((b: Row) => b.type === 'tool_result').length : 0), 0)
-      return { ref, role: promptText(rows[unit.start]) !== null ? 'user' : 'assistant', tokens: tokensOf(chars, scale), results }
+      let chars = 0
+      for (let i = unit.start; i <= unit.end; i++)
+        if (!owned.has(i)) {
+          owned.add(i)
+          chars += rowLength(rows[i])
+        }
+      return { ref, unit, chars }
     })
-    .filter(m => m.tokens > 0)
-    .sort((a, b) => b.tokens - a.tokens)
-    .slice(0, LISTED_MESSAGES)
-  if (sized.length === 0) return ''
+}
+
+function turnLabel(rows: readonly Row[], unit: Unit): string {
+  const row = rows[unit.start]
+  return isQueuedCommand(row) ? 'task notification' : `"${oneLine(promptText(row) ?? '')}"`
+}
+
+/** The uncompressed history as ranges a compress call can take whole: one per user turn, oldest first, with its size and what it
+    holds; then the largest single messages. A compressed block ends a range, so no listed range spans one. */
+export function historyReport(rows: readonly Row[], idx: Index, scale: number): string {
+  const blockRows = [...idx.blocks.values()].map(b => b.row)
+  type Turn = { first: string; last: string; label: string; chars: number; tools: Map<string, number> }
+  const turns: Turn[] = []
+  let end = -1
+  const sized = sizedUnits(rows, idx)
+  for (const { ref, unit, chars } of sized) {
+    const current = turns.at(-1)
+    if (current === undefined || unit.call === undefined || blockRows.some(b => b > end && b < unit.start))
+      turns.push({ first: ref, last: ref, label: unit.call === undefined ? turnLabel(rows, unit) : '(continued)', chars, tools: new Map() })
+    else Object.assign(current, { last: ref, chars: current.chars + chars })
+    if (unit.call) turns.at(-1)!.tools.set(unit.call.name, (turns.at(-1)!.tools.get(unit.call.name) ?? 0) + 1)
+    end = unit.end
+  }
+  if (turns.length === 0) return ''
+  const kept = new Set([...turns].sort((a, b) => b.chars - a.chars).slice(0, LISTED_TURNS))
+  const left = turns.filter(t => !kept.has(t))
+  const line = (t: Turn) => {
+    const tools = [...t.tools].map(([name, n]) => (n > 1 ? `${name}×${n}` : name)).join(', ')
+    return `- ${t.first === t.last ? t.first : `${t.first}..${t.last}`} ${approxTokens(tokensOf(t.chars, scale))} ${t.label}${tools ? `; ${tools}` : ''}`
+  }
+  const largest = [...sized].sort((a, b) => b.chars - a.chars).slice(0, LISTED_MESSAGES).filter(m => m.chars > 0)
   return [
-    'Largest uncompressed messages (drop candidates: a range over them removes their text and tool outputs entirely):',
-    ...sized.map(m => `- ${m.ref} ${m.role} ${approxTokens(m.tokens)}${m.results > 0 ? `, ${m.results} tool output${m.results === 1 ? '' : 's'}` : ''}`),
+    'Uncompressed history by user turn, oldest first (range, size, prompt; tools used). Each range can be passed to a compress call as is:',
+    ...turns.filter(t => kept.has(t)).map(line),
+    ...(left.length > 0 ? [`- ... ${left.length} smaller turns, ${approxTokens(tokensOf(left.reduce((n, t) => n + t.chars, 0), scale))} together`] : []),
+    '',
+    'Largest single messages (a range over one drops its text and tool output entirely):',
+    ...largest.map(m => `- ${m.ref} ${approxTokens(tokensOf(m.chars, scale))} ${m.unit.call ? callLabel(m.unit.call) : turnLabel(rows, m.unit)}`),
   ].join('\n')
 }

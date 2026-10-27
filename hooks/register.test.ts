@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, submit, world } from './world.fixture'
+import { COMPRESS_CALL, CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, step, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
 import { emptyStats, recordFirstRequest, recordFork, type TurnUsage } from './stats'
@@ -66,7 +66,7 @@ describe('finding the transcript', () => {
     world(on, { tokens: 160000, rows: () => conversation().rows })
     await start($)
     const { context } = await $.tool.call({ tool: 'Read', file_path: '/x' })
-    expect(context![0]).toContain('Context is at or over the maximum limit.')
+    expect(context![0]).toContain('CRITICAL: the context is over the maximum limit.')
   })
 
   test('reports loudly when no project folder holds the session transcript', async ($, on) => {
@@ -141,8 +141,9 @@ describe('tool.call tagging and nudges', () => {
     const contexts = []
     for (let i = 0; i < 6; i++) contexts.push((await $.tool.call({ tool: 'Read', file_path: '/x' })).context!)
     expect(contexts.map(c => c.length)).toEqual([2, 1, 1, 1, 1, 2])
-    expect(contexts[0][0]).toContain('Context is at or over the maximum limit.')
-    expect(contexts[0][0]).toContain('Call mcp__dcp__compress now.')
+    expect(contexts[0][0]).toContain('CRITICAL: the context is over the maximum limit.')
+    expect(contexts[0][0]).toContain('You MUST call mcp__dcp__compress now')
+    expect(contexts[0][0]).toContain('- m0001..m0003 ')
     expect(contexts[1][0]).toMatch(/^<dcp-message-id>/)
   })
 
@@ -161,12 +162,30 @@ describe('tool.call tagging and nudges', () => {
     expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
   })
 
-  test('under the max limit, sends no nudge however many results followed the prompt', async ($, on) => {
+  test('between the limits, sends the iteration nudge from the 15th result of a turn on, every nudgeFrequency results', async ($, on) => {
     world(on, { tokens: 120000, rows: () => conversation().rows })
     await start($)
+    const contexts = []
+    for (let i = 0; i < 20; i++) contexts.push((await $.tool.call({ tool: 'Read', file_path: '/x' })).context!)
+    expect(contexts.map(c => c.length)).toEqual([...Array(14).fill(1), 2, 1, 1, 1, 1, 2])
+    expect(contexts[14][0]).toContain('working for a while since the last user message')
+    await submit($)
+    expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
+  })
+
+  test('under the min limit, sends no nudge however many results followed the prompt', async ($, on) => {
+    world(on, { tokens: 90000, rows: () => conversation().rows })
+    await start($)
     const counts = []
-    for (let i = 0; i < 16; i++) counts.push((await $.tool.call({ tool: 'Read', file_path: '/x' })).context!.length)
-    expect(counts).toEqual(Array(16).fill(1))
+    for (let i = 0; i < 20; i++) counts.push((await $.tool.call({ tool: 'Read', file_path: '/x' })).context!.length)
+    expect(counts).toEqual(Array(20).fill(1))
+  })
+
+  test('sends no nudge while a queued compression waits for the next request, which applies it', async ($, on) => {
+    world(on, { tokens: 160000, rows: () => conversation().rows })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'S' }])
+    expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
   })
 })
 
@@ -177,22 +196,22 @@ describe('compress tool', () => {
     world(on, { tokens: 100, rows: () => conversation().rows })
     await start($)
     const r = await compress($, summary('m0001', 'm0003'))
-    expect(r.result).toBe('Compressed 3 messages into [Compressed conversation section].')
+    expect(r.result).toMatch(/^Queued 3 messages for compression\./)
     expect(r.context).toEqual(['<dcp-message-id>m0004</dcp-message-id>'])
   })
 
   test('under the min limit, denies a summary longer than a stub so nothing is paraphrased', async ($, on) => {
     world(on, { tokens: 99000, rows: () => conversation().rows })
     await start($)
-    const r = await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(201) }])
-    expect(r.deny).toBe('Context is 99.0k, under the 100000 limit: summaries must be stubs of at most 200 characters (what was dropped and why). m0001..m0003 has 201.')
-    expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(200) }])).result).toContain('Compressed')
+    const r = await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(301) }])
+    expect(r.deny).toBe('Context is 99.0k, under the 100000 limit: summaries must be stubs of about 200 characters, 300 at most (what was dropped and why). m0001..m0003 has 301.')
+    expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(300) }])).result).toContain('Queued')
   })
 
   test('from the min limit up, accepts a full summary', async ($, on) => {
     world(on, { tokens: 100000, rows: () => conversation().rows })
     await start($)
-    expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(5000) }])).result).toContain('Compressed')
+    expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(5000) }])).result).toContain('Queued')
   })
 
   test('denies an invalid range with the DCP error so the model can retry', async ($, on) => {
@@ -202,12 +221,15 @@ describe('compress tool', () => {
     expect(r.deny).toBe('startId m0003 comes after endId m0002')
   })
 
-  test('denies a range overlapping one already queued this turn', async ($, on) => {
+  test('folds a later call into the queue: denies a partial overlap, skips a range already covered, replaces covered ranges', async ($, on) => {
     world(on, { tokens: 100, rows: () => conversation().rows })
     await start($)
     await compress($, summary('m0001', 'm0002'))
-    const r = await compress($, summary('m0002', 'm0003'))
-    expect(r.deny).toContain('ranges in one call cannot overlap')
+    expect((await compress($, summary('m0002', 'm0003'))).deny).toBe(
+      'content[0] (m0002..m0003) partly overlaps m0001..m0002, queued by an earlier call and not applied yet. Cover all of m0001..m0002 to replace it, or none of it.',
+    )
+    expect((await compress($, summary('m0002', 'm0002'))).result).toContain('m0002..m0002 skipped: it lies inside m0001..m0002, already queued')
+    expect((await compress($, summary('m0001', 'm0003'))).result).toContain('m0001..m0003 replaces m0001..m0002, queued earlier')
   })
 
   test('waits for the transcript to catch up before declaring an id unavailable', async ($, on) => {
@@ -218,7 +240,7 @@ describe('compress tool', () => {
     await clock.advance(1000)
     t.call('Read', {}, { ref: 'm0004' })
     await clock.advance(1000)
-    expect((await call).result).toContain('Compressed')
+    expect((await call).result).toContain('Queued')
   })
 
   test('denies an id that never appears after the attempts', async ($, on) => {
@@ -232,6 +254,101 @@ describe('compress tool', () => {
 
 const measured = (before: number, first: number) =>
   recordFirstRequest(recordFork(emptyStats(), { before, estimated: 0, copied: 1, gone: [] }), { input_tokens: first, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
+
+describe('mid-turn apply', () => {
+  // the conversation as the transcript holds it once the compress call's result is written
+  const withCall = () => {
+    const t = conversation()
+    t.call(TOOL, { topic: 'T', content: [] }, { id: COMPRESS_CALL, output: 'Queued' })
+    return t
+  }
+  const aborted = ($: any) => $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 'turn-1', reason: 'aborted' })
+
+  test('the request after a compress call stops the turn; its end forks, switches and continues the work in the fork', async ($, on) => {
+    const session = { id: ID, switchOnResume: true }
+    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows, session })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+    expect(await step($)).toMatchObject({ answer: '', toolUses: [], stopReason: null })
+    expect(seen.steps).toEqual([]) // no request was sent in the old session
+    expect(seen.aborts).toEqual(['turn-1'])
+    expect(clones(seen)).toEqual([]) // the transcript holds the turn's last results only once it ended
+    await aborted($)
+    expect(clones(seen)).toHaveLength(1)
+    await clock.advance(1000)
+    expect(seen.resumes).toEqual([`resume ${session.id}`])
+    expect(seen.prompts).toEqual([expect.stringMatching(/^<dcp-system-reminder>Your compressions were applied \(~\d+ removed\)/)])
+    expect(await step($, 2)).toMatchObject({ answer: 'model answer' }) // stopped once: the next request goes out
+  })
+
+  test('forks at the turn end only once the transcript holds every call the turn ran, with its result', async ($, on) => {
+    let rows = conversation().rows // the compress call and its result are not written yet
+    const { clock, seen } = world(on, { tokens: 100, rows: () => rows })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    await step($)
+    const ending = aborted($)
+    await clock.advance(500)
+    expect(clones(seen)).toEqual([])
+    rows = withCall().rows
+    await clock.advance(500)
+    await ending
+    expect(clones(seen)).toHaveLength(1)
+  })
+
+  test('keeps the queue when the switch fails, so the next turn end forks again', async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    await step($)
+    await aborted($)
+    await clock.advance(1000)
+    expect(seen.toasts).toEqual([expect.stringContaining('did not happen')])
+    expect(seen.prompts).toEqual([])
+    await complete($)
+    expect(clones(seen)).toHaveLength(2)
+  })
+
+  test('sends the request as usual while a subagent works, leaving the compression to the turn end', async ($, on) => {
+    const { seen } = world(on, { tokens: 100, rows: () => withCall().rows, agents: [{ id: 'a', status: 'running' }] })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    expect(await step($)).toMatchObject({ answer: 'model answer' })
+    expect(seen.aborts).toEqual([])
+  })
+
+  test('sends the request as usual when the fork would not pay for its cache rewrite', async ($, on) => {
+    const t = withCall()
+    t.text('x'.repeat(20000))
+    const { seen } = world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'S' }])
+    expect(await step($)).toMatchObject({ answer: 'model answer' })
+    expect(seen.aborts).toEqual([])
+    expect(seen.writes[LOG]).toContain('fork waits')
+  })
+
+  test('sends the request as usual while the conversation has no two answered requests to size the fork by', async ($, on) => {
+    const t = new Transcript()
+    t.prompt('goal', 'm0001')
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
+    const { seen } = world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'S' }])
+    expect(await step($)).toMatchObject({ answer: 'model answer' })
+    expect(seen.aborts).toEqual([])
+    expect(seen.writes[LOG]).toContain('turn not stopped for the fork')
+  })
+
+  test('leaves requests alone without a queued compression and in subagents', async ($, on) => {
+    const { seen } = world(on, { tokens: 100, rows: () => withCall().rows })
+    await start($)
+    expect(await step($)).toMatchObject({ answer: 'model answer' })
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    expect(await step($, 1, 'sub')).toMatchObject({ answer: 'model answer' })
+    expect(seen.aborts).toEqual([])
+  })
+})
 
 describe('turn.complete', () => {
   async function queued($: any, on: On, rowsOf = () => conversation().rows, session?: { id: string; switchOnResume?: boolean }) {
@@ -559,10 +676,19 @@ describe('/dcp-prune', () => {
     const { clock } = world(on, { tokens: 99000, rows: () => conversation().rows })
     await start($)
     await prune($)
-    expect((await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'x'.repeat(500) }])).result).toContain('Compressed')
+    expect((await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'x'.repeat(500) }])).result).toContain('Queued')
     await complete($)
     await clock.advance(1000)
     expect((await compress($, [{ startId: 'm0003', endId: 'm0003', summary: 'x'.repeat(500) }])).deny).toContain('summaries must be stubs')
+  })
+
+  test('its compression waits for the turn end instead of stopping the turn mid-way', async ($, on) => {
+    const { seen } = world(on, { tokens: 100, rows: () => conversation().rows })
+    await start($)
+    await prune($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    expect(await step($)).toMatchObject({ answer: 'model answer' })
+    expect(seen.aborts).toEqual([])
   })
 
   test('forks although it would remove far less than it makes the cache rewrite, once', async ($, on) => {
@@ -610,7 +736,7 @@ describe('classic.Stop', () => {
     expect(block).toContain('DROP')
     expect(block).toContain('max 200 chars')
     expect(block).toContain('mcp__dcp__compress')
-    expect(block).toContain('Largest uncompressed messages')
+    expect(block).toContain('- m0001..m0003 ')
     expect(block).toContain('repeat your last answer verbatim')
     expect(block).not.toContain('VERY AGGRESSIVE')
   })

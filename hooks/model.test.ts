@@ -13,7 +13,7 @@ describe('indexRows', () => {
     const idx = indexRows(t.rows)
     expect(idx.units.get('m0001')).toEqual({ start: 0, end: 1 })
     expect(idx.units.get('b1')).toEqual({ start: 2, end: 2 })
-    expect(idx.units.get('m0002')).toEqual({ start: 4, end: 6 })
+    expect(idx.units.get('m0002')).toMatchObject({ start: 4, end: 6, call: { name: 'Read' } })
     expect(idx.blocks.get(1)).toMatchObject({ row: 2 })
     expect(idx.blocks.get(1)!.summary).toContain('old summary')
     expect(idx.maxMessageRef).toBe(2)
@@ -25,7 +25,7 @@ describe('indexRows', () => {
     t.prompt('go', 'm0001')
     t.rows.push({ ...t.rows[0], type: 'assistant', uuid: 'think', message: { id: 'a1', role: 'assistant', content: [{ type: 'thinking', thinking: '' }] } })
     t.call('Bash', { command: 'ls' }, { ref: 'm0002', msg: 'a1' })
-    expect(indexRows(t.rows).units.get('m0002')).toEqual({ start: 2, end: 5 })
+    expect(indexRows(t.rows).units.get('m0002')).toMatchObject({ start: 2, end: 5 })
   })
 
   test('collects tool calls with results, error status and turn age', () => {
@@ -72,6 +72,22 @@ describe('indexRows', () => {
     const orphanTool = new Transcript()
     orphanTool.rows.push({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['<dcp-message-id>m0002</dcp-message-id>'], hookName: 'tool.call', toolUseID: 'nope-context' } })
     expect(() => indexRows(orphanTool.rows)).toThrow('message id m0002 at row 0 names no tool call')
+  })
+
+  test('a prompt tag on a task notification the turn took in starts at that notification, not at the last typed prompt', () => {
+    const t = new Transcript()
+    t.prompt('go', 'm0001') // 0, 1
+    t.call('Bash', { command: 'make' }, { ref: 'm0002' }) // 2-4
+    t.rows.push({ type: 'attachment', attachment: { type: 'queued_command', prompt: '<task-notification>done</task-notification>' } }) // 5
+    t.rows.push({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['<dcp-message-id>m0003</dcp-message-id>'], hookName: 'prompt.submit' } }) // 6
+    expect(indexRows(t.rows).units.get('m0003')).toEqual({ start: 5, end: 6 })
+  })
+
+  test('fails loudly on a second prompt tag with no new prompt since the first', () => {
+    const t = new Transcript()
+    t.prompt('a', 'm0001')
+    t.rows.push({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['<dcp-message-id>m0002</dcp-message-id>'], hookName: 'prompt.submit' } })
+    expect(() => indexRows(t.rows)).toThrow('message id m0002 at row 2 has no prompt before it')
   })
 
   test('fails loudly on a duplicated tag', () => {

@@ -1,12 +1,11 @@
-const REF = 'm\\d{4}|b[1-9]\\d*'
+const REF = 'm\\d{4,}|b[1-9]\\d*'
 const BARE = new RegExp(`^(?:${REF})$`)
 const AT_END = new RegExp(`\\n<dcp-message-id>(${REF})</dcp-message-id>\\s*$`)
 const ALONE = new RegExp(`^<dcp-message-id>(${REF})</dcp-message-id>$`)
 
-export const MAX_MESSAGE_NUMBER = 9999
-
+/** m + at least 4 digits: m0001, m9999, m10000. */
 export function messageRef(n: number): string {
-  if (!Number.isInteger(n) || n < 1 || n > MAX_MESSAGE_NUMBER) throw new Error(`Message number ${n} is outside 1-${MAX_MESSAGE_NUMBER}`)
+  if (!Number.isInteger(n) || n < 1) throw new Error(`Invalid message number: ${n}`)
   return `m${String(n).padStart(4, '0')}`
 }
 
@@ -21,7 +20,7 @@ export function parseRef(text: string): { ref: string; block?: number; number?: 
   if (!BARE.test(ref)) return null
   const n = Number(ref.slice(1))
   if (ref[0] === 'b') return { ref, block: n }
-  return n >= 1 ? { ref, number: n } : null
+  return n >= 1 && ref === messageRef(n) ? { ref, number: n } : null
 }
 
 export const tagLine = (ref: string) => `\n<dcp-message-id>${ref}</dcp-message-id>`

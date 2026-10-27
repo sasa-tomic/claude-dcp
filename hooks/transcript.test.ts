@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { assertCurrent, parseTranscript, serializeTranscript } from './transcript'
+import { assertAnswered, assertCurrent, parseTranscript, serializeTranscript } from './transcript'
 
 const assistant = (text: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } })
 
@@ -26,5 +26,22 @@ describe('assertCurrent', () => {
 
   test('rejects a transcript with no assistant text', () => {
     expect(() => assertCurrent([{ type: 'user' }], 'x', 'p')).toThrow('lags the session')
+  })
+})
+
+describe('assertAnswered', () => {
+  const use = (id: string) => ({ type: 'assistant', message: { id: `a-${id}`, content: [{ type: 'tool_use', id, name: 'Read', input: {} }] } })
+  const result = (id: string) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } })
+
+  test('accepts a transcript whose every tool call has its result', () => {
+    expect(() => assertAnswered([use('a'), result('a')], ['a'], 'p')).not.toThrow()
+  })
+
+  test('names the calls whose result the transcript does not hold yet', () => {
+    expect(() => assertAnswered([use('a'), result('a'), use('b'), use('c')], [], 'p')).toThrow('p does not yet hold the results of b, c; it lags the session')
+  })
+
+  test('names a call the session ran that the transcript does not hold at all yet', () => {
+    expect(() => assertAnswered([use('a'), result('a')], ['a', 'z'], 'p')).toThrow('p does not yet hold the results of z; it lags the session')
   })
 })

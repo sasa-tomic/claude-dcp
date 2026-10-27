@@ -4,8 +4,16 @@ const ARCHIVE = 'archive'
 const DAY_MS = 86_400_000
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
+/** Where every child starts. A child inherits the session's cwd otherwise, and cannot start (ENOENT) once that directory is gone,
+    as a removed worktree is; every path passed to a child is absolute. */
+export const CHILD_CWD = '/'
+
+export function exec($: Dollar, argv: string[], init: { stdin?: string; timeoutMs?: number } = {}) {
+  return $.process.run(argv, { ...init, cwd: CHILD_CWD })
+}
+
 export async function run($: Dollar, argv: string[]) {
-  const { exitCode, stderr } = await $.process.run(argv)
+  const { exitCode, stderr } = await exec($, argv)
   if (exitCode !== 0) throw new Error(`${argv.join(' ')} failed: exit ${exitCode}, ${stderr}`)
 }
 
@@ -35,7 +43,7 @@ export async function pruneArchive($: Dollar, dir: string, days: number): Promis
 }
 
 async function titleOf($: Dollar, path: string): Promise<string> {
-  const { exitCode, stdout, stderr } = await $.process.run(['grep', '-o', '-E', '"aiTitle":"[^"]*"', path])
+  const { exitCode, stdout, stderr } = await exec($, ['grep', '-o', '-E', '"aiTitle":"[^"]*"', path])
   if (exitCode === 1) return 'untitled'
   if (exitCode !== 0) throw new Error(`could not read the title of ${path}: exit ${exitCode}, ${stderr}`)
 

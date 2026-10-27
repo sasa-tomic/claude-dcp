@@ -25,7 +25,7 @@ export function world(on: On, w: World) {
   const clock = mock.clock(on)
   mock.store(on, w.store)
   mock.env(on, { HOME, ...w.env })
-  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], shell: [] as string[][], commands: [] as string[] }
+  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], shell: [] as string[][], commands: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
   for (const [id, meta] of Object.entries(w.archived ?? {})) files.set(`${ARCHIVE}/${id}.jsonl`, { size: meta.size ?? 1, ageDays: meta.ageDays, title: meta.title })
@@ -41,6 +41,15 @@ export function world(on: On, w: World) {
     return { type: 'engine', ref: 1 } as any
   })
   on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('turn.abort', (_$, e) => {
+    seen.aborts.push(e.turnId)
+    return { value: undefined }
+  })
+  on('turn.step', async function* (_$, e) {
+    seen.steps.push(e.index)
+    yield { kind: 'text' as const, index: 0, text: 'model answer' }
+    return { turnId: e.turnId, index: e.index, answer: 'model answer', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  })
   on('prompt.compose', () => ({ sections: [{ id: 'base', text: 'BASE', scope: 'shared' }] }))
   on('prompt.submit', (_$, e) => {
     if (w.failing === 'prompt.submit') throw new Error('refused')
@@ -70,6 +79,7 @@ export function world(on: On, w: World) {
   on('process.spawn', async function* (_$, e) {
     const path = e.argv.at(-1)!
     expect(e.argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', path])
+    expect(e.cwd).toBe('/') // the session's cwd may be gone
     // the session's own transcript, or a fork of it as written, then what the session wrote into it after the switch
     const text = path === SRC ? serializeTranscript(w.rows() as any) : seen.writes[path] + serializeTranscript((w.appended ?? []) as any)
     const middle = Math.floor(text.length / 2) // a piece ends wherever the child's write did, mid-line included
@@ -79,6 +89,7 @@ export function world(on: On, w: World) {
   })
   on('process.run', (_$, e) => {
     const [cmd, ...args] = e.argv
+    expect(e.init?.cwd).toBe('/') // the session's cwd may be gone
     const result = (exitCode: number, stdout = '', stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     if (cmd === 'dd') {
       seen.writes[args[0]!.replace('of=', '')] = e.init!.stdin!
@@ -137,5 +148,11 @@ export const clones = (seen: { writes: Record<string, string> }) => Object.keys(
 export const complete = ($: any, answer = 'all done', usage?: unknown) => $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage })
 export const start = ($: any, isInteractive = true) => $.session.start({ cwd: CWD, surface: isInteractive ? 'terminal' : null, isInteractive })
 export const submit = ($: any, text = 'hi', extra = {}) => $.prompt.submit({ text, ...extra })
-export const compress = ($: any, content: unknown[]) => $.tool.call({ tool: TOOL, topic: 'T', content })
+export const COMPRESS_CALL = 'toolu_compress'
+export const compress = ($: any, content: unknown[]) => $.tool.call({ tool: TOOL, topic: 'T', content, tool_use_id: COMPRESS_CALL })
+/** One model request, read to its end; the kit's stream returns the result when done (its `result` is unset). */
+export async function step($: any, index = 1, agentId?: string) {
+  const stream = $.turn.step({ turnId: 'turn-1', index, model: 'm', messageCount: 1, agentId })
+  for (let r = await stream.next(); ; r = await stream.next()) if (r.done) return r.value
+}
 

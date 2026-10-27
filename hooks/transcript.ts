@@ -27,3 +27,12 @@ export function assertCurrent(rows: readonly Row[], answer: string, path: string
   if (!last || !answer.includes(textOf(last).trim()))
     throw new Error(`${path} does not yet end with the turn's final answer; it lags the session`)
 }
+
+/** Throws unless the transcript holds the results of the `ran` tool calls and of every call it holds, since the file is written
+    asynchronously: a fork copying a call without its result would be refused by the API, and one missing a call would lose it. */
+export function assertAnswered(rows: readonly Row[], ran: readonly string[], path: string): void {
+  const blocks = (type: string, role: string) => rows.flatMap(row => (row.type === role && Array.isArray(row.message?.content) ? row.message.content.filter((b: Row) => b.type === type) : []))
+  const answered = new Set(blocks('tool_result', 'user').map((b: Row) => b.tool_use_id))
+  const open = [...new Set([...ran, ...blocks('tool_use', 'assistant').map((b: Row) => b.id)])].filter(id => !answered.has(id))
+  if (open.length > 0) throw new Error(`${path} does not yet hold the results of ${open.join(', ')}; it lags the session`)
+}

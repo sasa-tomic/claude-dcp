@@ -1,6 +1,6 @@
 import type { Plan } from './compress'
 import { tagLine } from './ids'
-import { COMPRESSED_BLOCK_HEADER, type Index, tagOf } from './model'
+import { COMPRESSED_BLOCK_HEADER, type Index, isQueuedCommand, tagOf } from './model'
 import type { Row } from './rows'
 
 const SUMMARY_ROW_FIELDS = ['isSidechain', 'userType', 'entrypoint', 'cwd', 'version', 'gitBranch', 'timestamp'] as const
@@ -11,10 +11,11 @@ export function wrapCompressedSummary(blockId: number, summary: string): string 
   return body.length === 0 ? `${COMPRESSED_BLOCK_HEADER}\n${footer}` : `${COMPRESSED_BLOCK_HEADER}\n${body}\n\n${footer}`
 }
 
-// Rows that go with the conversation: messages, this plugin's id tags, and the token-count reminders, which are stale as soon as the next one arrives.
-// Other attachments (skill and tool listings, instructions, environment, memory) are state Claude Code supplies and stay.
+// Rows that go with the conversation: messages, task notifications a turn took in, this plugin's id tags, and the token-count reminders,
+// which are stale as soon as the next one arrives. Other attachments (skill and tool listings, instructions, environment, memory) are
+// state Claude Code supplies and stay.
 const isRemovable = (row: Row) =>
-  row.type === 'user' || row.type === 'assistant' || tagOf(row) !== null || (row.type === 'attachment' && row.attachment?.type === 'total_tokens_reminder')
+  row.type === 'user' || row.type === 'assistant' || isQueuedCommand(row) || tagOf(row) !== null || (row.type === 'attachment' && row.attachment?.type === 'total_tokens_reminder')
 
 export type ApplyContext = { sessionId: string; newUuid: () => string }
 
