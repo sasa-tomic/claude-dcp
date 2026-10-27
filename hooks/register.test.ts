@@ -309,6 +309,74 @@ describe('mid-turn apply', () => {
     expect(clones(seen)).toHaveLength(2)
   })
 
+  test('drops a fork when a turn starts in the session before the switch, and forks again when that turn ends', async ($, on) => {
+    const session = { id: ID, switchOnResume: true }
+    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows, session })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    await step($)
+    await aborted($)
+    const [first] = clones(seen)
+    await $.turn.start({ text: 'a scheduled task', turnId: 'turn-2' }) // its work would be missing from the fork
+    await clock.advance(1000)
+    expect(seen.resumes).toEqual([])
+    expect(seen.shell).toContainEqual(['rm', '-f', '--', first])
+    expect(seen.writes[LOG]).toContain(`fork ${first!.split('/').pop()!.replace('.jsonl', '')} dropped: a turn started in ${ID} after the fork read it`)
+    await complete($)
+    await clock.advance(1000)
+    expect(seen.resumes).toEqual([`resume ${session.id}`])
+    expect(session.id).not.toBe(first!.split('/').pop()!.replace('.jsonl', ''))
+  })
+
+  test('drops a fork when a turn starts while the turn end waits for the transcript', async ($, on) => {
+    let rows = conversation().rows
+    const session = { id: ID, switchOnResume: true }
+    const { clock, seen } = world(on, { tokens: 100, rows: () => rows, session })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    await step($)
+    const ending = aborted($)
+    await clock.advance(500)
+    await $.turn.start({ text: 'a scheduled task', turnId: 'turn-2' })
+    rows = withCall().rows
+    await clock.advance(500)
+    await ending
+    await clock.advance(1000)
+    expect(seen.resumes).toEqual([])
+    expect(seen.writes[LOG]).toContain('dropped: a turn started')
+  })
+
+  test('switches back and drops the fork when a turn ran in the session while the resume waited for it', async ($, on) => {
+    const session = { id: ID, switchOnResume: true }
+    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows, session, duringResume: () => $.turn.start({ text: 'queued prompt', turnId: 'turn-2' }) })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    await step($)
+    await aborted($)
+    const fork = clones(seen)[0]!.split('/').pop()!.replace('.jsonl', '')
+    await clock.advance(1000)
+    expect(seen.resumes).toEqual([`resume ${fork}`, `resume ${ID}`])
+    expect(session.id).toBe(ID)
+    expect(seen.prompts).toEqual([]) // no continue prompt: the work stays in the old session
+    expect(seen.writes[LOG]).toContain(`fork ${fork} dropped`)
+  })
+
+  test('makes no second fork of a session while the switch to the first is pending', async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    await step($)
+    await aborted($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S2' }])
+    expect(await step($, 2)).toMatchObject({ answer: 'model answer' }) // not stopped: there is no fork to stop for
+    await complete($)
+    expect(clones(seen)).toHaveLength(1)
+    expect(seen.writes[LOG]).toContain('fork waits: an earlier fork has not switched yet')
+    await clock.advance(1000)
+    await complete($)
+    expect(clones(seen)).toHaveLength(2) // the switch failed in this world, so the queue forks again
+  })
+
   test('sends the request as usual while a subagent works, leaving the compression to the turn end', async ($, on) => {
     const { seen } = world(on, { tokens: 100, rows: () => withCall().rows, agents: [{ id: 'a', status: 'running' }] })
     await start($)

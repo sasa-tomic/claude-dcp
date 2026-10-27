@@ -19,7 +19,7 @@ export const DAY = 86_400_000
 export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; env?: Record<string, string>; agents?: { id: string; status: AgentStatus }[] }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; agents?: { id: string; status: AgentStatus }[] }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -41,6 +41,7 @@ export function world(on: On, w: World) {
     return { type: 'engine', ref: 1 } as any
   })
   on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.abort', (_$, e) => {
     seen.aborts.push(e.turnId)
     return { value: undefined }
@@ -128,8 +129,9 @@ export function world(on: On, w: World) {
     seen.statuses.push(e.text)
     return { value: undefined }
   })
-  on('command.run', (_$, e) => {
+  on('command.run', async (_$, e) => {
     seen.resumes.push(`${e.command} ${e.args}`)
+    await w.duringResume?.()
     if (session.switchOnResume) session.id = e.args
     return {}
   })

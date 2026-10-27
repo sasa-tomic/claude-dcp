@@ -149,7 +149,9 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
 
 /** `applyPending`: a compress call queued ranges, so the next model request of the turn stops the turn to apply them.
     `stopped`: the turn was stopped for that; its end forks and continues the work in the fork.
-    `ran`: the ids of the turn's tool calls, whose results the transcript must hold before a fork copies it. */
+    `ran`: the ids of the turn's tool calls, whose results the transcript must hold before a fork copies it.
+    `turns`: main-loop turns started in this process; a fork made before the latest one lacks its work.
+    `forking`: a fork is written and its switch pending; a second fork of the same session would race it. */
 type State = {
   nextRef: number
   seeded: boolean
@@ -159,6 +161,8 @@ type State = {
   applyPending: boolean
   stopped: boolean
   ran: string[]
+  turns: number
+  forking: boolean
   pruning: boolean
   active: boolean
 }
@@ -290,8 +294,15 @@ async function forkPays($: Dollar, config: Config, draft: Draft): Promise<boolea
 /** Applies the queued compressions and the strategies to a copy of the transcript and switches the session to it; false when the
     fork would cost the cache more than it removes, the compressions then waiting for a larger fork. `forced` skips that check (a
     /dcp-prune, or a turn already stopped for this fork). `current` throws while the transcript has not caught up with the session;
-    `then` runs in the fork once the switch is done. The queue is cleared only then: a switch that fails leaves it for the next fork. */
-async function forkQueued($: Dollar, config: Config, current: (rows: Row[], path: string) => void, forced: boolean, then?: (removed: string) => Promise<unknown>): Promise<boolean> {
+    `then` runs in the fork once the switch is done. The queue is cleared only then: a switch that fails leaves it for the next fork.
+    `turns` is the count of turns started when the turn that forks ended: one started since (a scheduled task, a queued prompt)
+    writes into the old session, so the fork is dropped, switching back if the resume waited for that turn, and the queue waits
+    for its end. */
+async function forkQueued($: Dollar, config: Config, state: State, turns: number, current: (rows: Row[], path: string) => void, forced: boolean, then?: (removed: string) => Promise<unknown>): Promise<boolean> {
+  if (state.forking) {
+    await log($, 'fork waits: an earlier fork has not switched yet')
+    return false
+  }
   const from = await $.session.id()
   const { rows, path } = await readWhen($, (rows, path) => {
     try {
@@ -315,12 +326,26 @@ async function forkQueued($: Dollar, config: Config, current: (rows: Row[], path
   const delta = removed >= 0 ? `~${formatTokens(removed)} removed` : `~${formatTokens(-removed)} added`
   const pending = `${delta} (estimated; measured at the next reply)`
   await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
+  const drop = async () => {
+    await run($, ['rm', '-f', '--', `${dir}/${to}.jsonl`])
+    transcriptDirs.delete(to)
+    await $.store.delete(`stats2:${to}`)
+    await log($, `fork ${to} dropped: a turn started in ${from} after the fork read it; the queue waits for that turn's end`)
+  }
+  state.forking = true
   $.clock.after(RESUME_DELAY_MS, async () => {
     try {
+      if (state.turns !== turns) return await drop()
       const draftText = (await $.prompt.read()).text
       await $.command.run({ command: 'resume', args: to })
       const id = await $.session.id()
       if (id !== to) throw new Error(`switch to ${to} did not happen; session is ${id}`)
+      if (state.turns !== turns) {
+        await $.command.run({ command: 'resume', args: from })
+        const back = await $.session.id()
+        if (back !== from) throw new Error(`switch back to ${from} did not happen; session is ${back}, a fork that lacks the latest turn`)
+        return await drop()
+      }
       await writeQueue($, from, [])
       if (draftText.length > 0) {
         const { isFilled, refusal } = await $.prompt.fill({ text: draftText })
@@ -336,6 +361,8 @@ async function forkQueued($: Dollar, config: Config, current: (rows: Row[], path
       await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
     } catch (err) {
       await report($, err)
+    } finally {
+      state.forking = false
     }
   })
 
@@ -344,8 +371,8 @@ async function forkQueued($: Dollar, config: Config, current: (rows: Row[], path
 
 /** Whether the turn should stop before its next request so the queued compressions apply now: no subagent works, and the fork pays.
     Judged on the transcript as it stands, which may lag the latest tool results; they weigh little against the ranges. */
-async function stopForFork($: Dollar, config: Config): Promise<boolean> {
-  if (await agentsBusy($)) return false
+async function stopForFork($: Dollar, config: Config, state: State): Promise<boolean> {
+  if (state.forking || (await agentsBusy($))) return false
   const { rows } = await loadTranscript($)
   if (tokensPerChar(rows) === undefined) {
     await log($, 'turn not stopped for the fork: no two consecutive answered requests to size it by yet; it waits for the turn end')
@@ -453,7 +480,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, seeded: false, toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], pruning: false, active: false }
+  const state: State = { nextRef: 0, seeded: false, toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: false, pruning: false, active: false }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state, e.isInteractive)
@@ -544,11 +571,17 @@ export const register: Register = (on, options) => {
   // A compression queued mid-turn is applied before the next request: the turn is stopped there, and its end forks, switches and
   // continues the work in the fork with a prompt. The transcript holds the turn's last tool results only once the turn has ended, so
   // the fork waits for that. Without this the context would only shrink when the turn ends, however long it runs.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) state.turns++
+
+    return next(e)
+  })
+
   on('turn.step', async function* ($, e, next) {
     // a /dcp-prune turn forks at its end, forced past minRemovedShare, and has no task to continue
     if (!state.active || e.agentId !== undefined || !state.applyPending || state.pruning) return yield* next(e)
     state.applyPending = false
-    if (!(await reported($, () => stopForFork($, config)))) return yield* next(e)
+    if (!(await reported($, () => stopForFork($, config, state)))) return yield* next(e)
     state.stopped = true
     await $.turn.abort({ turnId: e.turnId })
 
@@ -556,6 +589,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    const turns = state.turns // before any await, so a turn that starts meanwhile is seen as newer than the fork
     const result = await next(e)
     if (!state.active || e.agentId !== undefined) return result
     await reported($, () => recordTurnStats($, e.usage))
@@ -563,7 +597,7 @@ export const register: Register = (on, options) => {
     if (state.stopped) {
       state.stopped = false
       const ran = state.ran
-      await reported($, () => forkQueued($, config, (rows, path) => assertAnswered(rows, ran, path), true, async removed => $.prompt.submit({ text: continuePrompt(removed) })))
+      await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertAnswered(rows, ran, path), true, async removed => $.prompt.submit({ text: continuePrompt(removed) })))
       return result
     }
     if (e.reason !== 'answer') return result
@@ -571,7 +605,7 @@ export const register: Register = (on, options) => {
     state.pruning = false
     if ((await readQueue($, await $.session.id())).length === 0) return result
     if (await agentsBusy($)) return result
-    await reported($, () => forkQueued($, config, (rows, path) => assertCurrent(rows, e.answer, path), forced))
+    await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertCurrent(rows, e.answer, path), forced))
 
     return result
   })
