@@ -67,11 +67,14 @@ export function queuedResult(messages: number, notes: readonly string[]): string
 export const continuePrompt = (removed: string) =>
   `<dcp-system-reminder>Your compressions were applied (${removed}) and the session continues in a fork. This is not a user message: continue the task where you left off.</dcp-system-reminder>`
 
+/** The reply after a compress call: one non-empty word, so the turn's answer ends in text the fork check finds and nothing is printed twice. */
+export const AFTER_CALL = 'Write no text before the call; after it, answer with the single word Compressed.'
+
 /** What /dcp-prune asks, as a user turn: the largest closed chunks, summarised densely, whatever the context size. */
 export function prunePrompt(tool: string, hint: string): string {
   return [
     `Compress now: one ${tool} call over everything finished, largest closed chunks first, merging earlier blocks with (bN). Dense summaries: paths, signatures, decisions, errors, open items; no narrative. Leave the newest working messages.`,
     ...(hint ? [`Focus: ${hint}`] : []),
-    'Write no text before the call; after it, answer with the single word Compressed.',
+    AFTER_CALL,
   ].join(' ')
 }

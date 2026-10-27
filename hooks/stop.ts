@@ -1,3 +1,5 @@
+import { AFTER_CALL } from './prompts'
+
 export const STUB_MAX_CHARS = 200
 /** What the stub rule enforces: the asked length with room for a model's miscount, so a stub a few characters over is not a wasted call. */
 export const STUB_LIMIT_CHARS = 300
@@ -7,13 +9,11 @@ export type StopTier = 'drop' | 'compress' | 'aggressive'
 /** Below min only dead weight is dropped; from min, the largest chunks are paraphrased; above max everything not needed next goes. */
 export const stopTier = (tokens: number, min: number, max: number): StopTier => (tokens < min ? 'drop' : tokens <= max ? 'compress' : 'aggressive')
 
-const REPLY = 'After the call, repeat your last answer verbatim: the caller reads only your final message.'
-
 export const stopPrompt = (tier: StopTier, toolName: string): string =>
   ({
-    drop: `End of turn. DROP what you no longer need: one ${toolName} call, a range per dead stretch (finished work, superseded reads, failed attempts). Summary = stub, max ${STUB_MAX_CHARS} chars, no content. Nothing dead: no call. ${REPLY}`,
-    compress: `End of turn, context over min. DROP dead stretches (stub summaries), then compress and merge the largest closed chunks below into dense summaries (paths, signatures, decisions, errors, open items; no narrative); merge blocks with (bN). One ${toolName} call. ${REPLY}`,
-    aggressive: `End of turn, context over max: VERY AGGRESSIVE. One ${toolName} call: compress everything the next step does not need, largest first; merge all blocks. Prefer keeping key information, especially from the 2-3 most recent turns. Keep task state, decisions, paths, open items, minimal words. ${REPLY}`,
+    drop: `End of turn. DROP what you no longer need: one ${toolName} call, a range per dead stretch (finished work, superseded reads, failed attempts). Summary = stub, max ${STUB_MAX_CHARS} chars, no content. Nothing dead: no call. ${AFTER_CALL}`,
+    compress: `End of turn, context over min. DROP dead stretches (stub summaries), then compress and merge the largest closed chunks below into dense summaries (paths, signatures, decisions, errors, open items; no narrative); merge blocks with (bN). One ${toolName} call. ${AFTER_CALL}`,
+    aggressive: `End of turn, context over max: VERY AGGRESSIVE. One ${toolName} call: compress everything the next step does not need, largest first; merge all blocks. Prefer keeping key information, especially from the 2-3 most recent turns. Keep task state, decisions, paths, open items, minimal words. ${AFTER_CALL}`,
   })[tier]
 
 const FOLDED_SUMMARY_CHARS = 80

@@ -151,7 +151,8 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
     `stopped`: the turn was stopped for that; its end forks and continues the work in the fork.
     `ran`: the ids of the turn's tool calls, whose results the transcript must hold before a fork copies it.
     `turns`: main-loop turns started in this process; a fork made before the latest one lacks its work.
-    `forking`: a fork is written and its switch pending; a second fork of the same session would race it. */
+    `forking`: a fork is written and its switch pending; a second fork of the same session would race it.
+    `ending`: the Stop hook held the turn back to ask for a compress; the turn has no work left, so its compression forks at its end. */
 type State = {
   nextRef: number
   seeded: boolean
@@ -164,11 +165,12 @@ type State = {
   turns: number
   forking: boolean
   pruning: boolean
+  ending: boolean
   active: boolean
 }
 
 // The prompt that continues a stopped turn resets these too: the fork it runs in has just shed the ranges.
-const resetTurn = (state: State) => Object.assign(state, { toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [] })
+const resetTurn = (state: State) => Object.assign(state, { toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], ending: false })
 
 function guidance(idx: Index, rows: readonly Row[], scale: number) {
   return [blockReport(idx.blocks, scale), historyReport(rows, idx, scale)].filter(s => s.length > 0).join('\n\n')
@@ -480,7 +482,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, seeded: false, toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: false, pruning: false, active: false }
+  const state: State = { nextRef: 0, seeded: false, toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: false, pruning: false, ending: false, active: false }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state, e.isInteractive)
@@ -564,6 +566,7 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (!state.active || e.stop_hook_active) return result
     const block = await reported($, () => stopReason($, config, state))
+    state.ending = block !== undefined
 
     return block === undefined ? result : { ...result, block }
   })
@@ -578,8 +581,8 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.step', async function* ($, e, next) {
-    // a /dcp-prune turn forks at its end, forced past minRemovedShare, and has no task to continue
-    if (!state.active || e.agentId !== undefined || !state.applyPending || state.pruning) return yield* next(e)
+    // a /dcp-prune turn, or one the Stop hook held back, forks at its end: it has no task to continue
+    if (!state.active || e.agentId !== undefined || !state.applyPending || state.pruning || state.ending) return yield* next(e)
     state.applyPending = false
     if (!(await reported($, () => stopForFork($, config, state)))) return yield* next(e)
     state.stopped = true

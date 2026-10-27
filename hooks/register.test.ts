@@ -4,6 +4,7 @@ import type { On } from 'claude-code'
 import { COMPRESS_CALL, CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, step, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
+import { AFTER_CALL } from './prompts'
 import { emptyStats, recordFirstRequest, recordFork, type TurnUsage } from './stats'
 import { Transcript } from './rows.fixture'
 import { parseTranscript, serializeTranscript } from './transcript'
@@ -805,8 +806,21 @@ describe('classic.Stop', () => {
     expect(block).toContain('max 200 chars')
     expect(block).toContain('mcp__dcp__compress')
     expect(block).toContain('- m0001..m0003 ')
-    expect(block).toContain('repeat your last answer verbatim')
+    expect(block).toContain(AFTER_CALL)
+    expect(block).not.toContain('verbatim')
     expect(block).not.toContain('VERY AGGRESSIVE')
+  })
+
+  test('a compress made after the hold-back forks at the turn end: the turn is not stopped, nothing is asked to continue', async ($, on) => {
+    const { clock, seen } = await toolTurn($, on, 30000)
+    await stop($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    expect(await step($)).toMatchObject({ answer: 'model answer' })
+    expect(seen.aborts).toEqual([])
+    await complete($)
+    await clock.advance(1000)
+    expect(clones(seen)).toHaveLength(1)
+    expect(seen.prompts).toEqual([])
   })
 
   test('from the min limit up, asks to compress and merge the largest chunks', async ($, on) => {

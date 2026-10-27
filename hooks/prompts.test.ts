@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { continuePrompt, iterationNudge, limitNudge, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
+import { AFTER_CALL, continuePrompt, iterationNudge, limitNudge, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
 
 const TOOL = 'mcp__dcp__compress'
 
@@ -76,7 +76,7 @@ describe('prunePrompt', () => {
     const text = prunePrompt(TOOL, '')
     expect(text).toContain(`one ${TOOL} call`)
     expect(text).toContain('Dense summaries')
-    expect(text.endsWith('Write no text before the call; after it, answer with the single word Compressed.')).toBe(true)
+    expect(text.endsWith(AFTER_CALL)).toBe(true)
     expect(text).not.toContain('Focus')
   })
 
