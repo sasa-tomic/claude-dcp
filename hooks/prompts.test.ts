@@ -72,15 +72,15 @@ describe('continuePrompt', () => {
 })
 
 describe('prunePrompt', () => {
-  test('asks for one dense compress call and no extra text, naming the tool', () => {
+  test('asks for one dense compress call and a one-word answer, naming the tool', () => {
     const text = prunePrompt(TOOL, '')
     expect(text).toContain(`one ${TOOL} call`)
     expect(text).toContain('Dense summaries')
-    expect(text.endsWith('Write no text before or after the call.')).toBe(true)
+    expect(text.endsWith('Write no text before the call; after it, answer with the single word Compressed.')).toBe(true)
     expect(text).not.toContain('Focus')
   })
 
   test('puts the hint in before the closing instruction', () => {
-    expect(prunePrompt(TOOL, 'the audit work')).toContain('Focus: the audit work Write no text before or after the call.')
+    expect(prunePrompt(TOOL, 'the audit work')).toContain('Focus: the audit work Write no text before the call;')
   })
 })
