@@ -1,10 +1,10 @@
 import type { AgentStatus, Hook, Register } from 'claude-code'
 
 import { applyCompression } from './apply'
-import { CHILD_CWD, archiveSession, exec, listArchive, pruneArchive, restoreSession, run } from './archive'
+import { CHILD_CWD, OUTPUTS, archiveSession, exec, listArchive, pruneArchive, restoreSession, run } from './archive'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine } from './ids'
-import { COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
+import { COMPRESS_TOOL, type Index, indexRows } from './model'
 import { continuePrompt, iterationNudge, limitNudge, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
 import { answeredRequests, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
 import { isProtected } from './protected'
@@ -26,7 +26,6 @@ type Config = CompressConfig &
   }
 
 const TOOL_NAME = 'compress'
-const FULL_TOOL_NAME = 'mcp__dcp__compress'
 const LOG_LINES = 200
 const READ_ATTEMPTS = 10
 const READ_INTERVAL_MS = 500
@@ -47,6 +46,7 @@ const INPUT_SCHEMA = {
           startId: { type: 'string', description: 'First ID of the range: mNNNN or bN' },
           endId: { type: 'string', description: 'Last ID of the range: mNNNN or bN' },
           summary: { type: 'string', description: 'Text that stands in for everything in the range' },
+          save: { type: 'array', items: { type: 'string' }, description: 'IDs of tool outputs in the range to keep in files instead of dropping' },
         },
         required: ['startId', 'endId', 'summary'],
       },
@@ -90,6 +90,8 @@ async function writeStats($: Dollar, id: string, stats: Stats) {
 // A session's transcript lives in the project folder of the directory it started in, while the session's cwd moves with
 // every `cd` the model runs; so the transcript is found by session id, never derived from the cwd.
 const transcriptDirs = new Map<string, string>()
+
+const outputsDir = (path: string) => `${path.slice(0, path.lastIndexOf('/'))}/${OUTPUTS}`
 
 async function findTranscript($: Dollar, id: string): Promise<string | undefined> {
   const known = transcriptDirs.get(id)
@@ -156,6 +158,7 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
 type State = {
   nextRef: number
   seeded: boolean
+  allocating: Promise<unknown>
   toolsThisTurn: number
   sinceNudge: number
   queuedThisTurn: boolean
@@ -203,7 +206,7 @@ async function computeNudges($: Dollar, config: Config, state: State): Promise<s
   if (!over && !iterating) return []
   state.sinceNudge = 0
 
-  return [(over ? limitNudge : iterationNudge)(FULL_TOOL_NAME, guidance(idx, rows, scale))]
+  return [(over ? limitNudge : iterationNudge)(COMPRESS_TOOL, guidance(idx, rows, scale))]
 }
 
 /** A failure here would otherwise only be a skipped hook (no tags, no nudges, no trace), so it is reported before it propagates. */
@@ -230,19 +233,19 @@ async function stopReason($: Dollar, config: Config, state: State): Promise<stri
   const tier = stopTier(context.tokens, min, maxLimit(config, context.window, idx, scale))
   const advice = tier === 'drop' ? historyReport(rows, idx, scale) : guidance(idx, rows, scale)
 
-  return [stopPrompt(tier, FULL_TOOL_NAME), advice].filter(part => part.length > 0).join('\n\n')
+  return [stopPrompt(tier, COMPRESS_TOOL), advice].filter(part => part.length > 0).join('\n\n')
 }
 
 /** Validates the call against the transcript and queues its ranges for the next fork, folded into those queued before. */
 async function queueCompress($: Dollar, config: Config, state: State, args: CompressArgs): Promise<string> {
-  const plans = await readWhen($, rows => {
+  const plans = await readWhen($, (rows, path) => {
     try {
-      return planCompression(rows, indexRows(rows), args, config)
+      return planCompression(rows, indexRows(rows), args, config, outputsDir(path))
     } catch (err) {
       throw err instanceof PlanError && err.message.includes(UNKNOWN_ID) ? new LagError(err.message) : err
     }
   })
-  if (!state.pruning) await assertStubsUnderMin($, config, args)
+  if (!state.pruning) await assertStubsUnderMin($, config, args, plans)
   const id = await $.session.id()
   const { queue, notes } = mergeQueue(await readQueue($, id), plans)
   await writeQueue($, id, queue)
@@ -250,10 +253,13 @@ async function queueCompress($: Dollar, config: Config, state: State, args: Comp
   return queuedResult(plans.filter(p => queue.some(q => q.entry === p.entry)).reduce((n, p) => n + p.messageCount, 0), notes)
 }
 
-/** Under the min limit nothing is paraphrased: a range may only be dropped, with a stub for a summary. */
-async function assertStubsUnderMin($: Dollar, config: Config, args: CompressArgs) {
+/** Under the min limit nothing is paraphrased: a range may only be dropped, with a stub for a summary, and may not cover a block,
+    whose summary the stub would replace. */
+async function assertStubsUnderMin($: Dollar, config: Config, args: CompressArgs, plans: readonly Plan[]) {
   const { context } = await $.session.usage()
   if (context.tokens === undefined || context.tokens >= resolveLimit(config.minContextLimit, context.window)) return
+  const merging = plans.filter(p => p.consumedBlockIds.length > 0).map(p => `${p.entry.startId}..${p.entry.endId} covers ${p.consumedBlockIds.map(n => `b${n}`).join(', ')}`)
+  if (merging.length > 0) throw new PlanError(`Context is ${formatTokens(context.tokens)}, under the ${config.minContextLimit} limit: ranges must not cover compressed blocks; merge them only over the limit. ${merging.join(', ')}.`)
   const long = args.content.filter(c => c.summary.length > STUB_LIMIT_CHARS).map(c => `${c.startId}..${c.endId} has ${c.summary.length}`)
   if (long.length > 0)
     throw new PlanError(`Context is ${formatTokens(context.tokens)}, under the ${config.minContextLimit} limit: summaries must be stubs of about ${STUB_MAX_CHARS} characters, ${STUB_LIMIT_CHARS} at most (what was dropped and why). ${long.join(', ')}.`)
@@ -272,9 +278,9 @@ const paysForRewrite = (config: Config, removed: number, rewritten: number) => r
 type Draft = { idx: Index; plans: Plan[]; pruned: Set<string>; out: Row[]; scale: number; removed: number; rewritten: number }
 
 /** The transcript as the fork would write it, with what it removes and what it makes the cache rewrite: everything from its first change on. */
-function draftFork(rows: readonly Row[], queued: readonly Queued[], config: Config, to: string): Draft {
+function draftFork(rows: readonly Row[], path: string, queued: readonly Queued[], config: Config, to: string): Draft {
   const idx = indexRows(rows)
-  const plans = planCompression(rows, idx, { topic: 'queued', content: queued.map(q => q.entry) }, config)
+  const plans = planCompression(rows, idx, { topic: 'queued', content: queued.map(q => q.entry) }, config, outputsDir(path))
   const pruned = markPruned(idx, config)
   const out = applyCompression(applyPrunes(rows, idx, pruned), idx, plans, { sessionId: to, newUuid: () => crypto.randomUUID() })
   const scale = tokensPerChar(rows)
@@ -315,11 +321,14 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
     return { rows, path }
   })
   const to = crypto.randomUUID()
-  const draft = draftFork(rows, await readQueue($, from), config, to)
+  const draft = draftFork(rows, path, await readQueue($, from), config, to)
   if (!forced && !(await forkPays($, config, draft))) return false
   const { idx, plans, pruned, out, removed, rewritten } = draft
   const { context } = await $.session.usage()
   const dir = path.slice(0, path.lastIndexOf('/'))
+  const saves = plans.flatMap(p => p.saves)
+  if (saves.length > 0) await run($, ['mkdir', '-p', outputsDir(path)])
+  for (const { path: file, text } of saves) await $.fs.write(file, text)
   await writeTranscript($, `${dir}/${to}.jsonl`, out)
   transcriptDirs.set(to, dir)
   const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
@@ -375,12 +384,12 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
     Judged on the transcript as it stands, which may lag the latest tool results; they weigh little against the ranges. */
 async function stopForFork($: Dollar, config: Config, state: State): Promise<boolean> {
   if (state.forking || (await agentsBusy($))) return false
-  const { rows } = await loadTranscript($)
+  const { rows, path } = await loadTranscript($)
   if (tokensPerChar(rows) === undefined) {
     await log($, 'turn not stopped for the fork: no two consecutive answered requests to size it by yet; it waits for the turn end')
     return false
   }
-  return forkPays($, config, draftFork(rows, await readQueue($, await $.session.id()), config, 'draft'))
+  return forkPays($, config, draftFork(rows, path, await readQueue($, await $.session.id()), config, 'draft'))
 }
 
 /** The usage of the first request the model answered after a fork: the first one beyond the rows the fork copied. */
@@ -449,8 +458,15 @@ async function projectDir($: Dollar): Promise<string> {
 }
 
 /** The next message id, continuing after the highest one in the session's transcript. The transcript is read at the first tag
-    that finds it, not at session start, when a resumed session's file may not be resolvable yet; a new session has none. */
-async function nextMessageRef($: Dollar, state: State): Promise<string> {
+    that finds it, not at session start, when a resumed session's file may not be resolvable yet; a new session has none.
+    Parallel tool results ask at once, so each waits for the one before it: two reading the transcript would take the same id. */
+function nextMessageRef($: Dollar, state: State): Promise<string> {
+  const ref = state.allocating.then(() => allocateRef($, state))
+  state.allocating = ref.catch(() => undefined)
+  return ref
+}
+
+async function allocateRef($: Dollar, state: State): Promise<string> {
   if (!state.seeded) {
     const id = await $.session.id()
     const path = await findTranscript($, id)
@@ -474,7 +490,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
   await $.command.register({ name: 'dcp-stats', description: 'Show tokens dcp removed and the cache rewrites it caused' })
   await $.tool.register({
     name: TOOL_NAME,
-    description: toolDescription(FULL_TOOL_NAME),
+    description: toolDescription(COMPRESS_TOOL),
     inputSchema: INPUT_SCHEMA,
     isDeferred: false,
   })
@@ -482,7 +498,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, seeded: false, toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: false, pruning: false, ending: false, active: false }
+  const state: State = { nextRef: 0, seeded: false, allocating: Promise.resolve(), toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: false, pruning: false, ending: false, active: false }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state, e.isInteractive)
@@ -494,7 +510,7 @@ export const register: Register = (on, options) => {
     if (!state.active) return next(e)
     const { sections } = await next(e)
 
-    return { sections: [...sections, { id: 'dcp:system', text: systemPrompt(FULL_TOOL_NAME, config.protectedTools), scope: 'session' as const }] }
+    return { sections: [...sections, { id: 'dcp:system', text: systemPrompt(COMPRESS_TOOL, config.protectedTools), scope: 'session' as const }] }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -506,10 +522,10 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     if (!state.active) return next(e)
-    if (e.agentId !== undefined) return e.tool === FULL_TOOL_NAME ? { deny: `${FULL_TOOL_NAME} is for the main conversation only; a subagent's messages carry no ids.` } : next(e)
+    if (e.agentId !== undefined) return e.tool === COMPRESS_TOOL ? { deny: `${COMPRESS_TOOL} is for the main conversation only; a subagent's messages carry no ids.` } : next(e)
     let result
-    if (e.tool !== FULL_TOOL_NAME) await noteCall($, e.tool, e)
-    if (e.tool === FULL_TOOL_NAME) {
+    if (e.tool !== COMPRESS_TOOL) await noteCall($, e.tool, e)
+    if (e.tool === COMPRESS_TOOL) {
       try {
         result = { result: await queueCompress($, config, state, e as unknown as CompressArgs) }
       } catch (err) {
@@ -543,7 +559,7 @@ export const register: Register = (on, options) => {
       // the host refuses a submit from inside this hook, which holds the turn the prompt would wait for
       $.clock.after(RESUME_DELAY_MS, async () => {
         try {
-          await $.prompt.submit({ text: prunePrompt(FULL_TOOL_NAME, e.args.trim()) })
+          await $.prompt.submit({ text: prunePrompt(COMPRESS_TOOL, e.args.trim()) })
         } catch (err) {
           state.pruning = false
           await report($, err)
@@ -557,7 +573,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'dcp-stats' }, async $ => answer($, async () => renderStats(await readStats($, await $.session.id()))))
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool !== FULL_TOOL_NAME) return next(e)
+    if (e.props.tool !== COMPRESS_TOOL) return next(e)
 
     return next({ ...e, props: { ...e.props, input: foldCompressInput(e.props.input) } })
   })

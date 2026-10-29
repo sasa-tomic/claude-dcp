@@ -2,7 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
-import { PRUNED_TOOL_ERROR_INPUT, PRUNED_TOOL_OUTPUT, PRUNED_QUESTION_INPUT, applyPrunes, markPruned } from './strategies'
+import { PRUNED_COMPRESS_SUMMARY, PRUNED_TOOL_ERROR_INPUT, PRUNED_TOOL_OUTPUT, PRUNED_QUESTION_INPUT, applyPrunes, markPruned } from './strategies'
+import { COMPRESS_TOOL } from './model'
 
 const cfg = { deduplication: true, purgeErrors: true, purgeErrorsTurns: 2, protectedFilePatterns: ['**/*.env'] }
 
@@ -43,6 +44,24 @@ describe('purge errors', () => {
 
   test('does nothing when disabled', () => {
     expect(markPruned(indexRows(errored().rows), { ...cfg, purgeErrors: false }).size).toBe(0)
+  })
+})
+
+describe('compress calls', () => {
+  test('marks answered compress calls whatever the options, but not failed, unanswered or already stubbed ones', () => {
+    const t = new Transcript()
+    const call = (id: string, summary: string, opts = {}) => t.call(COMPRESS_TOOL, { topic: 'T', content: [{ startId: 'm0001', endId: 'm0002', summary }] }, { id, ...opts })
+    call('done', 'S')
+    call('denied', 'S', { isError: true })
+    call('stubbed', PRUNED_COMPRESS_SUMMARY)
+    t.rows.push({ ...t.rows[0], uuid: 'pending', message: { id: 'p', role: 'assistant', content: [{ type: 'tool_use', id: 'pending', name: COMPRESS_TOOL, input: { content: [{ summary: 'S' }] } }] } })
+    expect([...markPruned(indexRows(t.rows), { ...cfg, deduplication: false, purgeErrors: false })]).toEqual(['done'])
+  })
+
+  test('replaces each summary of a pruned compress call, keeping its boundaries', () => {
+    const t = new Transcript()
+    t.call(COMPRESS_TOOL, { topic: 'T', content: [{ startId: 'm0001', endId: 'm0002', summary: 'LONG', save: ['m0002'] }] }, { id: 'c' })
+    expect(applyPrunes(t.rows, indexRows(t.rows), new Set(['c']))[0].message.content[0].input).toEqual({ topic: 'T', content: [{ startId: 'm0001', endId: 'm0002', summary: PRUNED_COMPRESS_SUMMARY, save: ['m0002'] }] })
   })
 })
 

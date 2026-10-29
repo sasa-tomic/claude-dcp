@@ -17,8 +17,8 @@ describe('systemPrompt', () => {
 
   test('steers ranges to start and end at tool outputs, leaving prompts and final answers outside', () => {
     const text = systemPrompt(TOOL, [])
-    expect(text).toContain('Never compress user prompts or the final answer of a turn')
-    expect(text).toContain('start and end each range at tool-output ids')
+    expect(text).toContain('Blocks keep what the user typed verbatim')
+    expect(text).toContain('end each range at a tool-output id')
   })
 
   test('adds no protected-tools paragraph without protected tools', () => {
@@ -27,10 +27,11 @@ describe('systemPrompt', () => {
 })
 
 describe('toolDescription', () => {
-  test('carries the id grammar and the placeholder rule, with the tool name', () => {
+  test('carries the id grammar, the block rewrite rule and save, with the tool name', () => {
     const text = toolDescription(TOOL)
     expect(text).toContain('mNNNN for a message and bN for an earlier compressed block')
-    expect(text).toContain('write (bN) in your summary')
+    expect(text).toContain('your summary replaces theirs')
+    expect(text).toContain('save: IDs of tool outputs')
     expect(text).toContain(`one ${TOOL} call`)
   })
 })

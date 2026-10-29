@@ -2,6 +2,7 @@ import { loneRef, trailingRef } from './ids'
 import type { Row } from './rows'
 
 export const COMPRESSED_BLOCK_HEADER = '[Compressed conversation section]'
+export const COMPRESS_TOOL = 'mcp__dcp__compress'
 const CONTEXT_SUFFIX = '-context'
 
 /** Rows `start..end` that one id covers; a tool result's id also names its call. */

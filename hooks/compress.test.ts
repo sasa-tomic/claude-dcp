@@ -1,12 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { type CompressConfig, mergeQueue, planCompression } from './compress'
+import { type CompressConfig, type Entry, KEPT_HEADER, mergeQueue, planCompression } from './compress'
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
 
-const cfg: CompressConfig = { protectedTools: ['Task'], protectedFilePatterns: ['**/*.env'], protectUserMessages: false, protectTags: false }
+const cfg: CompressConfig = { protectedTools: ['Task'], protectedFilePatterns: ['**/*.env'] }
 const range = (startId: string, endId: string, summary = 'S') => ({ startId, endId, summary })
-const plan = (t: Transcript, content: ReturnType<typeof range>[], config = cfg) => planCompression(t.rows, indexRows(t.rows), { topic: 'T', content }, config)
+const OUT = '/p/dcp-outputs'
+const plan = (t: Transcript, content: Entry[], config = cfg) => planCompression(t.rows, indexRows(t.rows), { topic: 'T', content }, config, OUT)
 
 function session() {
   const t = new Transcript()
@@ -42,8 +43,8 @@ describe('range resolution', () => {
   test('validates content and topic', () => {
     const t = session()
     const idx = indexRows(t.rows)
-    expect(() => planCompression(t.rows, idx, { topic: ' ', content: [range('m0001', 'm0002')] }, cfg)).toThrow('topic must be a non-empty string')
-    expect(() => planCompression(t.rows, idx, { topic: 'T', content: [] }, cfg)).toThrow('content must be a non-empty array')
+    expect(() => planCompression(t.rows, idx, { topic: ' ', content: [range('m0001', 'm0002')] }, cfg, OUT)).toThrow('topic must be a non-empty string')
+    expect(() => planCompression(t.rows, idx, { topic: 'T', content: [] }, cfg, OUT)).toThrow('content must be a non-empty array')
     expect(() => plan(t, [range('m0001', 'm0002', '  ')])).toThrow('content[0].summary must be a non-empty string')
   })
 
@@ -65,73 +66,63 @@ describe('range resolution', () => {
   })
 })
 
-describe('block placeholders', () => {
-  function withBlocks() {
+describe('kept verbatim', () => {
+  const kept = (summary: string) => summary.slice(summary.indexOf(KEPT_HEADER))
+
+  test('keeps what the user typed, prompts and messages queued during a turn, and nothing other prompts carry', () => {
     const t = new Transcript()
-    t.block(1, 'first block') // 0
-    t.block(2, 'second block') // 1
-    t.prompt('go', 'm0001') // 2
-    t.call('Read', {}, { ref: 'm0002' }) // 3-5
-    return t
-  }
-
-  test('expands a required placeholder in place and consumes the block', () => {
-    const [p] = plan(withBlocks(), [range('b1', 'm0001', 'Before (b1) after')])
-    expect(p.finalSummary).toContain('Before first block after')
-    expect(p.consumedBlockIds).toContain(1)
+    t.prompt('build X', 'm0001', 'human')
+    t.prompt('Stop hook feedback: compress', 'm0002')
+    t.queued('also Y', 'human')
+    t.queued('<agent-message>report</agent-message>', 'peer')
+    t.call('Bash', { command: 'ls' }, { ref: 'm0003', output: 'BBB' })
+    const [p] = plan(t, [range('m0001', 'm0003', 'dense')])
+    expect(p.finalSummary).toBe(`dense\n\n${KEPT_HEADER}\n### User message\nbuild X\n\n### User message\nalso Y`)
   })
 
-  test('appends the summaries of required blocks the model left out', () => {
-    const t = new Transcript()
-    t.prompt('a', 'm0001')
-    t.block(1, 'inner block')
-    t.prompt('b', 'm0002')
-    const [p] = plan(t, [range('m0001', 'm0002', 'Only new')])
-    expect(p.finalSummary).toBe('Only new\n\nEarlier summaries inside this range:\n### (b1)\ninner block')
-    expect(p.consumedBlockIds).toEqual([1])
-  })
-
-  test('drops duplicate, unknown and out-of-range placeholders', () => {
-    const [p] = plan(withBlocks(), [range('b1', 'b2', '(b1) and (b1) and (b9)')])
-    expect(p.finalSummary.match(/first block/g)?.length).toBe(1)
-    expect(p.finalSummary).toContain('(b9)')
-  })
-
-  test('uses a block boundary id as the range edge and includes its summary', () => {
-    const [p] = plan(withBlocks(), [range('b2', 'm0002', 'new')])
-    expect(p.finalSummary).toContain('second block')
-    expect(p.consumedBlockIds).toEqual([2])
-  })
-})
-
-describe('protected content', () => {
-  test('appends user messages verbatim when enabled, without their id tags', () => {
-    const [p] = plan(session(), [range('m0001', 'm0004')], { ...cfg, protectUserMessages: true })
-    expect(p.finalSummary).toContain('User messages in this range, verbatim:\nbuild X\nnext')
-    expect(p.finalSummary).not.toContain('dcp-message-id')
-  })
-
-  test('appends <protect> prompt text when enabled', () => {
-    const t = new Transcript()
-    t.prompt('use <protect>always tabs</protect> ok', 'm0001')
-    t.prompt('b', 'm0002')
-    const [p] = plan(t, [range('m0001', 'm0002')], { ...cfg, protectTags: true })
-    expect(p.finalSummary).toContain('Protected prompt text, verbatim:\nalways tabs')
-  })
-
-  test('appends outputs of protected tools and of calls touching protected files', () => {
+  test('keeps outputs of protected tools and of calls touching protected files, in conversation order', () => {
     const t = new Transcript()
     t.prompt('go', 'm0001')
     t.call('Task', { description: 'x' }, { ref: 'm0002', output: 'AGENT REPORT' })
     t.call('Read', { file_path: '/p/.env' }, { ref: 'm0003', output: 'SECRET=1' })
     t.call('Read', { file_path: '/p/a.ts' }, { ref: 'm0004', output: 'plain' })
-    const [p] = plan(t, [range('m0001', 'm0004')])
-    expect(p.finalSummary).toContain('Protected tool outputs:\n### Tool: Task\nAGENT REPORT\n### Tool: Read\nSECRET=1')
-    expect(p.finalSummary).not.toContain('plain')
+    expect(kept(plan(t, [range('m0001', 'm0004')])[0].finalSummary)).toBe(`${KEPT_HEADER}\n### Tool: Task\nAGENT REPORT\n\n### Tool: Read\nSECRET=1`)
   })
 
-  test('adds nothing when the options are off and no protected tool ran', () => {
+  test('a summary alone when nothing is kept', () => {
     expect(plan(session(), [range('m0001', 'm0004')])[0].finalSummary).toBe('S')
+  })
+
+  test('a block inside the range gives up its summary and passes on its kept part; one without a kept part passes nothing', () => {
+    const t = new Transcript()
+    t.block(1, `old summary\n\n${KEPT_HEADER}\n### User message\nfirst`)
+    t.block(2, 'legacy summary')
+    t.prompt('second', 'm0001', 'human')
+    const [p] = plan(t, [range('b1', 'm0001', 'merged')])
+    expect(p.finalSummary).toBe(`merged\n\n${KEPT_HEADER}\n### User message\nfirst\n\n### User message\nsecond`)
+    expect(p.consumedBlockIds).toEqual([1, 2])
+  })
+
+  test('refuses a summary that contains the kept header', () => {
+    expect(() => plan(session(), [range('m0001', 'm0002', `x\n${KEPT_HEADER}\ny`)])).toThrow(`content[0].summary must not contain ${KEPT_HEADER}`)
+  })
+})
+
+describe('saved outputs', () => {
+  test('saves a named output to a file and keeps its path in place of the text', () => {
+    const [p] = plan(session(), [{ ...range('m0001', 'm0003'), save: ['M0003'] }])
+    expect(p.saves).toEqual([{ path: `${OUT}/toolu_6.txt`, text: 'BBB' }])
+    expect(p.finalSummary).toBe(`S\n\n${KEPT_HEADER}\n### Saved output: Bash ls\n${OUT}/toolu_6.txt`)
+  })
+
+  test('refuses ids that are not a successful, unprotected tool output inside the range', () => {
+    const t = session()
+    t.call('Task', {}, { ref: 'm0006', output: 'R' })
+    t.call('Bash', {}, { ref: 'm0007', isError: true })
+    const refused = (save: string[], end = 'm0007') => () => plan(t, [{ ...range('m0001', end), save }])
+    for (const id of ['m0001', 'm0006', 'm0007', 'zz']) expect(refused([id])).toThrow(`content[0].save: ${id} is not the ID of a successful, unprotected tool output inside m0001..m0007`)
+    expect(refused(['m0005'], 'm0003')).toThrow('m0005 is not the ID')
+    expect(refused('m0002' as any)).toThrow('content[0].save must be an array of tool-output IDs')
   })
 })
 

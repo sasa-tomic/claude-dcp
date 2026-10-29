@@ -54,6 +54,16 @@ describe('session.start', () => {
     expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toContain('<dcp-message-id>m0005</dcp-message-id>')
   })
 
+  test('gives parallel tool results distinct ids while the first of them seeds the numbering from the transcript', async ($, on) => {
+    const w: World = { rows: () => [], exists: false }
+    world(on, w)
+    await start($)
+    await submit($)
+    w.exists = true
+    const results = await Promise.all([$.tool.call({ tool: 'Bash', command: 'a' }), $.tool.call({ tool: 'Bash', command: 'b' })])
+    expect(results.map((r: any) => r.context.at(-1))).toEqual(['<dcp-message-id>m0002</dcp-message-id>', '<dcp-message-id>m0003</dcp-message-id>'])
+  })
+
   test('starts numbering at 1 for a session without a transcript yet', async ($, on) => {
     const { seen } = world(on, { rows: () => [], exists: false })
     await start($)
@@ -207,6 +217,19 @@ describe('compress tool', () => {
     const r = await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(301) }])
     expect(r.deny).toBe('Context is 99.0k, under the 100000 limit: summaries must be stubs of about 200 characters, 300 at most (what was dropped and why). m0001..m0003 has 301.')
     expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(300) }])).result).toContain('Queued')
+  })
+
+  test('under the min limit, denies a range over a block, whose summary its stub would replace', async ($, on) => {
+    const t = new Transcript()
+    t.block(1, 'earlier work')
+    t.prompt('goal', 'm0001')
+    t.call('Bash', { command: 'ls' }, { ref: 'm0002' })
+    world(on, { tokens: 99000, rows: () => t.rows })
+    await start($)
+    expect((await compress($, [{ startId: 'b1', endId: 'm0002', summary: 'stub' }])).deny).toBe(
+      'Context is 99.0k, under the 100000 limit: ranges must not cover compressed blocks; merge them only over the limit. b1..m0002 covers b1.',
+    )
+    expect((await compress($, [{ startId: 'm0001', endId: 'm0002', summary: 'stub' }])).result).toContain('Queued')
   })
 
   test('from the min limit up, accepts a full summary', async ($, on) => {
@@ -452,6 +475,20 @@ describe('turn.complete', () => {
     t.text('all done')
     return t
   }
+
+  test('writes the outputs a range saves into dcp-outputs before the fork, which keeps their paths', async ($, on) => {
+    const t = bigConversation()
+    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL', save: ['m0003'] }])
+    await complete($)
+    await clock.advance(1000)
+    const saved = `${PROJECTS}/-work-proj/dcp-outputs/${indexRows(t.rows).units.get('m0003')!.call!.id}.txt`
+    expect(seen.shell[0]).toEqual(['mkdir', '-p', `${PROJECTS}/-work-proj/dcp-outputs`])
+    expect(seen.writes[saved]).toBe('B'.repeat(4000))
+    expect(Object.keys(seen.writes).indexOf(saved)).toBeLessThan(Object.keys(seen.writes).indexOf(clones(seen)[0]))
+    expect(seen.writes[clones(seen)[0]]).toContain(`### Saved output: Bash ls\\n${saved}`)
+  })
 
   test('after the switch, toasts the saving and pins it for the new session, not before', async ($, on) => {
     const t = bigConversation()

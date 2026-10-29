@@ -95,7 +95,7 @@ describe('reports', () => {
     expect(text).toContain('~55.0k in total')
     expect(text).toContain('1. Drop ranges you no longer need.')
     expect(text).toContain('(e.g. b1..b8)')
-    expect(text).toContain('Merging is lossy and permanent.')
+    expect(text).toContain('Merging is lossy and permanent; user messages stay verbatim.')
   })
 
   test('history report lists each user turn as a ready range with its size, prompt and tools, then the largest messages', () => {

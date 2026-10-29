@@ -12,7 +12,7 @@ export const stopTier = (tokens: number, min: number, max: number): StopTier => 
 export const stopPrompt = (tier: StopTier, toolName: string): string =>
   ({
     drop: `End of turn. DROP what you no longer need: one ${toolName} call, a range per dead stretch (finished work, superseded reads, failed attempts). Summary = stub, max ${STUB_MAX_CHARS} chars, no content. Nothing dead: no call. ${AFTER_CALL}`,
-    compress: `End of turn, context over min. DROP dead stretches (stub summaries), then compress and merge the largest closed chunks below into dense summaries (paths, signatures, decisions, errors, open items; no narrative); merge blocks with (bN). One ${toolName} call. ${AFTER_CALL}`,
+    compress: `End of turn, context over min. DROP dead stretches (stub summaries), then compress and merge the largest closed chunks below into dense summaries (paths, signatures, decisions, errors, open items; no narrative); merge blocks into denser summaries. One ${toolName} call. ${AFTER_CALL}`,
     aggressive: `End of turn, context over max: VERY AGGRESSIVE. One ${toolName} call: compress everything the next step does not need, largest first; merge all blocks. Prefer keeping key information, especially from the 2-3 most recent turns. Keep task state, decisions, paths, open items, minimal words. ${AFTER_CALL}`,
   })[tier]
 

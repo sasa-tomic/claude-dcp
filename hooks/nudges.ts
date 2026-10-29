@@ -82,7 +82,7 @@ export function blockReport(blocks: ReadonlyMap<number, Block>, scale: number): 
     ...listed,
     'In order of preference:',
     '1. Drop ranges you no longer need. A range removes their raw text and tool outputs entirely.',
-    `2. Merge blocks only if they must live to the end of the session: compress a range over them (e.g. ${blockRef(1)}..${blockRef(8)}) citing each as (bN) once. Merging is lossy and permanent.`,
+    `2. Merge blocks only if they must live to the end of the session: compress a range over them (e.g. ${blockRef(1)}..${blockRef(8)}) with one denser summary. Merging is lossy and permanent; user messages stay verbatim.`,
     '3. Leave anything uncertain alone.',
   ].join('\n')
 }

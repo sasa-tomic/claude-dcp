@@ -15,6 +15,7 @@ const plan = (s: number, e: number, finalSummary: string, consumedBlockIds: numb
   messageCount: 0,
   finalSummary,
   consumedBlockIds,
+  saves: [],
 })
 let n = 0
 const ctx = { sessionId: 'NEW', newUuid: () => `new${++n}` }

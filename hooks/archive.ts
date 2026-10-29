@@ -1,6 +1,8 @@
 import type { Dollar } from './register'
 
 const ARCHIVE = 'archive'
+/** Where compress calls save tool outputs: beside the transcripts, outside any session folder, so no fork or archive moves them. */
+export const OUTPUTS = 'dcp-outputs'
 const DAY_MS = 86_400_000
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
@@ -33,11 +35,12 @@ async function archived($: Dollar, dir: string) {
   return (await $.fs.list(`${dir}/${ARCHIVE}`)).flatMap(entry => (entry.kind === 'file' && entry.name.endsWith('.jsonl') && SESSION.test(entry.name.slice(0, -6)) ? [{ id: entry.name.slice(0, -6), size: entry.size, mtimeMs: entry.mtimeMs }] : []))
 }
 
-/** Deletes the archived sessions last active more than `days` days ago; returns how many. */
+/** Deletes the archived sessions last active, and the saved outputs written, more than `days` days ago; returns how many sessions. */
 export async function pruneArchive($: Dollar, dir: string, days: number): Promise<number> {
   const cutoff = (await $.clock.now()) - days * DAY_MS
   const old = (await archived($, dir)).filter(s => s.mtimeMs < cutoff)
   for (const { id } of old) await run($, ['rm', '-rf', '--', `${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`, `${await $.env.get('HOME')}/.claude/dcp-status-${id}`])
+  if (await $.fs.exists(`${dir}/${OUTPUTS}`)) await run($, ['find', `${dir}/${OUTPUTS}`, '-type', 'f', '-mmin', `+${days * 24 * 60}`, '-delete'])
 
   return old.length
 }

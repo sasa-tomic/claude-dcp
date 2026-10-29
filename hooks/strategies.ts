@@ -1,10 +1,11 @@
-import { type Index, type ToolCall } from './model'
+import { COMPRESS_TOOL, type Index, type ToolCall } from './model'
 import { isProtected } from './protected'
 import type { Row } from './rows'
 
 export const PRUNED_TOOL_OUTPUT = '[output pruned: duplicate or stale]'
 export const PRUNED_TOOL_ERROR_INPUT = '[input pruned: the call failed]'
 export const PRUNED_QUESTION_INPUT = "[questions pruned: the answers are in the output]"
+export const PRUNED_COMPRESS_SUMMARY = '[summary pruned: it is in the block the call made]'
 
 const QUESTION_TOOL = 'AskUserQuestion'
 const KEPT_OUTPUT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']
@@ -20,9 +21,13 @@ export const callSignature = (name: string, input: Record<string, any>) => {
   return `${name}::${JSON.stringify(sortKeys(present))}`
 }
 
-/** The tool call ids whose output (or, for failed calls, input) is pruned: duplicates and old errors. */
+const unfoldedCompress = (call: ToolCall) =>
+  call.name === COMPRESS_TOOL && !call.isError && call.resultRow !== undefined && Array.isArray(call.input.content) && call.input.content.some((c: any) => c?.summary !== PRUNED_COMPRESS_SUMMARY)
+
+/** The tool call ids whose output (or, for failed calls, input) is pruned: duplicates and old errors; and the compress calls whose
+    summaries the fork puts in blocks, every queued range being applied by it. */
 export function markPruned(idx: Index, config: StrategyConfig): Set<string> {
-  const pruned = new Set<string>()
+  const pruned = new Set(idx.calls.filter(unfoldedCompress).map(c => c.id))
   const unprotected = idx.calls.filter(c => !isProtected(c.name, c.input, [], config.protectedFilePatterns))
 
   if (config.deduplication) {
@@ -52,6 +57,8 @@ export function applyPrunes(rows: readonly Row[], idx: Index, pruned: ReadonlySe
       if (!call) continue
       if (block.type === 'tool_use' && call.isError) {
         for (const key of Object.keys(block.input)) if (typeof block.input[key] === 'string') block.input[key] = PRUNED_TOOL_ERROR_INPUT
+      } else if (block.type === 'tool_use' && call.name === COMPRESS_TOOL) {
+        block.input.content = block.input.content.map((c: Record<string, unknown>) => ({ ...c, summary: PRUNED_COMPRESS_SUMMARY }))
       } else if (block.type === 'tool_use' && call.name === QUESTION_TOOL && block.input.questions !== undefined) {
         block.input.questions = PRUNED_QUESTION_INPUT
       } else if (block.type === 'tool_result' && !call.isError && call.name !== QUESTION_TOOL && !KEPT_OUTPUT_TOOLS.includes(call.name)) {

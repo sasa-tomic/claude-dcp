@@ -19,7 +19,7 @@ export const DAY = 86_400_000
 export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; agents?: { id: string; status: AgentStatus }[] }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -28,6 +28,7 @@ export function world(on: On, w: World) {
   const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], shell: [] as string[][], commands: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
+  if (w.saved) files.set(`${PROJECT}/dcp-outputs/toolu_x.txt`, { size: 1, ageDays: 0 })
   for (const [id, meta] of Object.entries(w.archived ?? {})) files.set(`${ARCHIVE}/${id}.jsonl`, { size: meta.size ?? 1, ageDays: meta.ageDays, title: meta.title })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('classic.Stop', () => ({}))
@@ -72,7 +73,9 @@ export function world(on: On, w: World) {
     const entry = (name: string, kind: 'dir' | 'file') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
     return { value: [entry('-other', 'dir'), entry('README', 'file'), entry('-work-proj', 'dir')] }
   })
-  on('fs.exists', (_$, e) => ({ value: w.exists !== false && (e.path === `${PROJECTS}/-work-proj/${session.id}.jsonl` || e.path in seen.writes || files.has(e.path) || (e.path === ARCHIVE && [...files.keys()].some(p => p.startsWith(`${ARCHIVE}/`)))) }))
+  // a folder exists while a file in it does
+  const exists = (path: string) => [...files.keys(), ...Object.keys(seen.writes)].some(p => p === path || p.startsWith(`${path}/`))
+  on('fs.exists', (_$, e) => ({ value: w.exists !== false && (e.path === `${PROJECTS}/-work-proj/${session.id}.jsonl` || exists(e.path)) }))
   on('fs.write', (_$, e) => {
     seen.writes[e.path] = e.text
     return { value: undefined }

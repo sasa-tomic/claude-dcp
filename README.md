@@ -50,6 +50,10 @@ Then `/plugin`, Installed tab, dcp, Update now, then `/reload-plugins`.
 
 Each fork moves the session it replaces into `archive/` of the project folder, where `/resume` does not list it. `/dcp-archive` lists the archived ones, `/dcp-restore <id>` moves one back. Archived sessions older than `archiveDays` are deleted at the next fork.
 
+## What a block keeps
+
+A block is the model's summary followed by a `[Kept verbatim]` part the plugin builds: every message you typed, outputs of protected tools and files, and the paths of outputs the model chose to `save` (written to `dcp-outputs/` of the project folder and deleted, like archived sessions, after `archiveDays`). A range over earlier blocks replaces their summaries with a new, denser one and carries their kept parts over unchanged, so merging shrinks the context instead of nesting old summaries. Under `minContextLimit` a range may not cover a block. Once a fork has applied a compress call, the call's own copy of its summaries is replaced by a stub.
+
 ## Measuring
 
 `/dcp-stats` reads figures the plugin records at each turn end, across forks. It reports the context per segment between forks, the tokens each fork removed, the cache write each fork forced, the tokens billed by kind, and the calls that repeated one compressed away. That last figure is a proxy for lost information, not a measure of accuracy.

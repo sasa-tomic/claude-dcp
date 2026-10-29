@@ -1,3 +1,5 @@
+import { KEPT_HEADER } from './compress'
+
 export function systemPrompt(tool: string, protectedTools: readonly string[]): string {
   const sections = [
     'You operate in a context-constrained environment: every request re-sends the whole conversation, so stale content costs tokens and attention on every step. Managing the context continuously is part of your job, not cleanup for later.',
@@ -11,7 +13,7 @@ export function systemPrompt(tool: string, protectedTools: readonly string[]): s
       '- dead ends, failed attempts, superseded file reads and command output: drop these at once, without waiting for the task to close',
     ].join('\n'),
     ['DO NOT COMPRESS:', '- what the next steps need verbatim: files being edited, exact errors, text you will quote', '- work still in progress'].join('\n'),
-    'Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Never compress user prompts or the final answer of a turn: start and end each range at tool-output ids, so the prompt before and the answer after stay in the context.',
+    'Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Blocks keep what the user typed verbatim. Never compress the final answer of a turn: end each range at a tool-output id, so the answer after stays in the context.',
     'Before each step ask: is anything above closed enough to become summary-only now? If so, compress it now instead of waiting for a limit. Prefer one call with several ranges, largest first.',
   ]
   if (protectedTools.length > 0)
@@ -22,11 +24,13 @@ export function systemPrompt(tool: string, protectedTools: readonly string[]): s
 export function toolDescription(tool: string): string {
   return `Replace spans of the conversation with summaries. A range runs from startId to endId inclusive; its messages and tool outputs leave the context.
 
-Summary: it must let you continue with the range gone. Keep paths, signatures, decisions with their reasons, constraints, findings and open items. Drop failed attempts, bulky output and back-and-forth. Quote short user messages; never change the user's scope, constraints or acceptance criteria.
+Summary: it must let you continue with the range gone. Keep paths, signatures, decisions with their reasons, constraints, findings and open items. Drop failed attempts, bulky output and back-and-forth. Do not repeat user messages: the environment keeps them verbatim.
 
 Boundaries: startId and endId are IDs visible in context, mNNNN for a message and bN for an earlier compressed block (shown under a "[Compressed conversation section]" header). startId must not come after endId. Ranges in one call must not overlap; pass independent ranges as separate entries of one ${tool} call. A range inside one an earlier call queued is skipped; a range covering queued ones replaces them.
 
-Blocks inside a range: write (bN) in your summary where block bN's content belongs, and it is replaced by that block's stored summary. Cover every block inside the range exactly once and none outside it. (bN) is only a placeholder; mention a block in prose as "block bN". Place each so the summary still reads correctly once expanded.`
+Blocks inside a range: your summary replaces theirs, so rewrite what is still needed of them, denser; what they kept verbatim (under ${KEPT_HEADER}) is carried over for you.
+
+save: IDs of tool outputs in the range whose text may be needed later. Each is written to a file and its path kept in the block; read the file when you need it. Outputs not saved are gone.`
 }
 
 const reminder = (lines: string[], guidance: string) => ['<dcp-system-reminder>', ...lines, ...(guidance ? ['', guidance] : []), '</dcp-system-reminder>'].join('\n')
@@ -38,7 +42,7 @@ export function limitNudge(tool: string, guidance: string): string {
       'CRITICAL: the context is over the maximum limit.',
       `You MUST call ${tool} now, before any other tool. Finish an atomic step in progress first.`,
       'Cover as much closed history as is safe in one call, largest and oldest first; the ranges below can be passed as they are. Leave only the newest working messages.',
-      'Summaries must carry everything needed to continue; quote short user messages.',
+      'Summaries must carry everything needed to continue.',
     ],
     guidance,
   )
@@ -73,7 +77,7 @@ export const AFTER_CALL = 'Write no text before the call; after it, answer with 
 /** What /dcp-prune asks, as a user turn: the largest closed chunks, summarised densely, whatever the context size. */
 export function prunePrompt(tool: string, hint: string): string {
   return [
-    `Compress now: one ${tool} call over everything finished, largest closed chunks first, merging earlier blocks with (bN). Dense summaries: paths, signatures, decisions, errors, open items; no narrative. Leave the newest working messages.`,
+    `Compress now: one ${tool} call over everything finished, largest closed chunks first, merging earlier blocks into denser summaries. Dense summaries: paths, signatures, decisions, errors, open items; no narrative. Leave the newest working messages.`,
     ...(hint ? [`Focus: ${hint}`] : []),
     AFTER_CALL,
   ].join(' ')

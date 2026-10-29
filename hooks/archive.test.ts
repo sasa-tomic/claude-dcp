@@ -29,6 +29,11 @@ describe('archiving after a fork', () => {
     expect(files.has(`${ARCHIVE}/${OLDER}.jsonl`)).toBe(false)
   })
 
+  test('deletes saved outputs older than the archive limit once outputs were saved', async ($, on) => {
+    const { seen } = await fork($, on, { saved: true })
+    expect(seen.shell).toContainEqual(['find', `${PROJECT}/dcp-outputs`, '-type', 'f', '-mmin', '+14400', '-delete'])
+  })
+
   test('leaves the old session where it is when the switch did not happen', async ($, on) => {
     const { seen, files } = await fork($, on, { session: { id: ID } })
     expect(seen.shell).toEqual([])

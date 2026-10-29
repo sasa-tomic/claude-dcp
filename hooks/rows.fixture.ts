@@ -21,15 +21,20 @@ export class Transcript {
     return this.rows.length - 1
   }
 
-  /** A prompt row and, with `ref`, the hidden-context attachment row that carries its id. */
-  prompt(text: string, ref?: string): number {
-    const row = this.push({ type: 'user', message: { role: 'user', content: text } })
+  /** A prompt row, from `origin` (the user's: 'human') and, with `ref`, the hidden-context attachment row that carries its id. */
+  prompt(text: string, ref?: string, origin?: string): number {
+    const row = this.push({ type: 'user', message: { role: 'user', content: text }, ...(origin ? { origin: { kind: origin } } : {}) })
     if (ref)
       this.push({
         type: 'attachment',
         attachment: { type: 'hook_additional_context', content: [tagLine(ref).trim()], hookName: 'prompt.submit', hookEvent: 'UserPromptSubmit' },
       })
     return row
+  }
+
+  /** A message that arrived while a turn ran, which the turn took in. */
+  queued(prompt: string, origin: string): number {
+    return this.push({ type: 'attachment', attachment: { type: 'queued_command', prompt, origin: { kind: origin }, commandMode: 'prompt' } })
   }
 
   block(blockId: number, body: string): number {
