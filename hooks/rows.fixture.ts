@@ -46,14 +46,14 @@ export class Transcript {
   }
 
   /** One assistant tool call, its result row, and (with `ref`) the tag attachment the hook adds. */
-  call(name: string, input: Record<string, unknown>, opts: { ref?: string; output?: string; isError?: boolean; id?: string; msg?: string } = {}): number {
+  call(name: string, input: Record<string, unknown>, opts: { ref?: string; output?: string; isError?: boolean; id?: string; msg?: string; result?: Record<string, unknown> } = {}): number {
     const id = opts.id ?? `toolu_${this.n + 1}`
     const msg = opts.msg ?? `msg${this.n + 1}`
     this.push({ type: 'assistant', message: { id: msg, role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } })
     const result = this.push({
       type: 'user',
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: opts.output ?? 'ok', ...(opts.isError ? { is_error: true } : {}) }] },
-      toolUseResult: { echo: opts.output ?? 'ok' },
+      toolUseResult: opts.result ?? { echo: opts.output ?? 'ok' },
     })
     if (!opts.ref) return result
     return this.push({

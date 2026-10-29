@@ -15,6 +15,8 @@ export type ToolCall = {
   resultRow?: number
   isError: boolean
   resultText: string
+  /** The output only says a background agent started; its report arrives later as a task notification. */
+  isLaunch: boolean
   turn: number
 }
 export type Block = { row: number; summary: string }
@@ -64,7 +66,7 @@ export function indexRows(rows: readonly Row[]): Index {
       seenAssistant.add(row.message.id)
       for (const b of content)
         if (b.type === 'tool_use') {
-          const call: ToolCall = { id: b.id, name: b.name, input: b.input ?? {}, useRow: i, isError: false, resultText: '', turn: seenAssistant.size }
+          const call: ToolCall = { id: b.id, name: b.name, input: b.input ?? {}, useRow: i, isError: false, resultText: '', isLaunch: false, turn: seenAssistant.size }
           calls.push(call)
           callById.set(b.id, call)
         }
@@ -76,6 +78,7 @@ export function indexRows(rows: readonly Row[]): Index {
           call.resultRow = i
           call.isError = b.is_error === true
           call.resultText = blockText(b.content)
+          call.isLaunch = row.toolUseResult?.status === 'async_launched'
         }
   })
 

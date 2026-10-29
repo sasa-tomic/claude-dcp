@@ -3,8 +3,8 @@ import type { AgentStatus, Hook, Register } from 'claude-code'
 import { applyCompression, staleCopies } from './apply'
 import { CHILD_CWD, OUTPUTS, archiveSession, exec, listArchive, pruneArchive, restoreSession, run } from './archive'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, mergeQueue, planCompression } from './compress'
-import { messageRef, tagLine } from './ids'
-import { COMPRESS_TOOL, type Index, indexRows } from './model'
+import { messageRef, tagLine, trailingRef } from './ids'
+import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
 import { continuePrompt, iterationNudge, limitNudge, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
 import { answeredRequests, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
 import { isProtected } from './protected'
@@ -576,6 +576,14 @@ export const register: Register = (on, options) => {
     if (e.props.tool !== COMPRESS_TOOL) return next(e)
 
     return next({ ...e, props: { ...e.props, input: foldCompressInput(e.props.input) } })
+  })
+
+  // A block is stored as a user row, so the terminal would draw its whole summary as a message: fold it to one line, all of it on ctrl+o.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const ref = e.props.text.startsWith(COMPRESSED_BLOCK_HEADER) ? trailingRef(e.props.text) : null
+    if (e.props.isExpanded || ref === null) return next(e)
+
+    return { type: 'Text', props: { dimColor: true }, children: [`${ref} · compressed conversation section · ${formatTokens(e.props.text.length)} chars (ctrl+o to expand)`] }
   })
 
   on('classic.Stop', async ($, e, next) => {

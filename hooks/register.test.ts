@@ -976,3 +976,23 @@ describe('ui.render ToolUse', () => {
     expect(seen.rendered[1].input).toEqual({ topic: 'T' })
   })
 })
+
+describe('ui.render UserMessage', () => {
+  const render = ($: any, text: string, isExpanded = false) =>
+    $.ui.render({ surface: 'terminal', component: 'UserMessage', requestId: 'u1', props: { text, origin: { kind: 'unclassified' }, isExpanded } })
+
+  test('folds a compressed block to one dim line naming it and its size', async ($, on) => {
+    world(on, { rows: () => [] })
+    await start($)
+    const tree = await render($, `[Compressed conversation section]\n${'x'.repeat(4000)}\n\n<dcp-message-id>b7</dcp-message-id>`)
+    expect(tree).toMatchObject({ type: 'Text', props: { dimColor: true }, children: ['b7 · compressed conversation section · 4.1k chars (ctrl+o to expand)'] })
+  })
+
+  test('draws a block in full when expanded, and other messages as they are', async ($, on) => {
+    const { seen } = world(on, { rows: () => [] })
+    await start($)
+    await render($, '[Compressed conversation section]\nx\n\n<dcp-message-id>b7</dcp-message-id>', true)
+    await render($, 'hello')
+    expect(seen.rendered.map(p => p.text)).toEqual(['[Compressed conversation section]\nx\n\n<dcp-message-id>b7</dcp-message-id>', 'hello'])
+  })
+})

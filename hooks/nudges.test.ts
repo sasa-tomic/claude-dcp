@@ -148,7 +148,7 @@ describe('reports', () => {
   })
 
   test('callLabel prefers the description, then the file, pattern or command, flattened and cut', () => {
-    const call = (input: Record<string, any>) => ({ id: 'c', name: 'Bash', input, useRow: 0, isError: false, resultText: '', turn: 1 })
+    const call = (input: Record<string, any>) => ({ id: 'c', name: 'Bash', input, useRow: 0, isError: false, resultText: '', isLaunch: false, turn: 1 })
     expect(callLabel(call({ description: 'Run tests', command: 'make' }))).toBe('Bash: Run tests')
     expect(callLabel(call({ command: 'a\n  b' }))).toBe('Bash: a b')
     expect(callLabel(call({ command: 'x'.repeat(60) }))).toBe(`Bash: ${'x'.repeat(47)}…`)

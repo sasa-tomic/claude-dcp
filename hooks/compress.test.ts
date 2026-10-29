@@ -90,6 +90,15 @@ describe('kept verbatim', () => {
     expect(kept(plan(t, [range('m0001', 'm0004')])[0].finalSummary)).toBe(`${KEPT_HEADER}\n### Tool: Task\nAGENT REPORT\n\n### Tool: Read\nSECRET=1`)
   })
 
+  test("drops a protected tool's background-launch notice, in new ranges and in the kept parts of merged blocks", () => {
+    const launch = 'Async agent launched successfully.\nagentId: a1\n\nDo not duplicate this agent.'
+    const t = new Transcript()
+    t.block(1, `old\n\n${KEPT_HEADER}\n### User message\nfirst\n\n### Tool: Agent\n${launch}\n\n### Tool: Agent\nREPORT`)
+    t.prompt('go', 'm0001')
+    t.call('Agent', { description: 'x' }, { ref: 'm0002', output: launch, result: { status: 'async_launched' } })
+    expect(kept(plan(t, [range('b1', 'm0002')])[0].finalSummary)).toBe(`${KEPT_HEADER}\n### User message\nfirst\n\n### Tool: Agent\nREPORT`)
+  })
+
   test('a summary alone when nothing is kept', () => {
     expect(plan(session(), [range('m0001', 'm0004')])[0].finalSummary).toBe('S')
   })

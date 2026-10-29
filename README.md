@@ -52,7 +52,7 @@ Each fork moves the session it replaces into `archive/` of the project folder, w
 
 ## What a block keeps
 
-A block is the model's summary followed by a `[Kept verbatim]` part the plugin builds: every message you typed, outputs of protected tools and files, and the paths of outputs the model chose to `save` (written to `dcp-outputs/` of the project folder and deleted, like archived sessions, after `archiveDays`). A range over earlier blocks replaces their summaries with a new, denser one and carries their kept parts over unchanged, so merging shrinks the context instead of nesting old summaries. Under `minContextLimit` a range may not cover a block. Once a fork has applied a compress call, the call's own copy of its summaries is replaced by a stub.
+A block is the model's summary followed by a `[Kept verbatim]` part the plugin builds: every message you typed, outputs of protected tools and files (not a background agent's launch notice: its report arrives later as a message), and the paths of outputs the model chose to `save` (written to `dcp-outputs/` of the project folder and deleted, like archived sessions, after `archiveDays`). A range over earlier blocks replaces their summaries with a new, denser one and carries their kept parts over unchanged, so merging shrinks the context instead of nesting old summaries. Under `minContextLimit` a range may not cover a block. Once a fork has applied a compress call, the call's own copy of its summaries is replaced by a stub. The terminal draws a block as one dim line naming it and its size; ctrl+o shows it in full.
 
 ## Measuring
 

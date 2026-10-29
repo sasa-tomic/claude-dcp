@@ -34,13 +34,15 @@ export const UNKNOWN_ID = 'is not in the current context'
 export const KEPT_HEADER = '[Kept verbatim]'
 const KEPT_SPLIT = /^\[Kept verbatim\]$/m
 const LABEL_CHARS = 80
+// a background agent's launch notice that blocks made before launches were skipped still carry
+const LAUNCH_ITEM = /### Tool: \S+\nAsync agent launched successfully\.[\s\S]*?(?=\n\n### |$)\s*/g
 const BLOCK_HEAD = /^\s*\[Compressed conversation(?: section)?(?: b\d+)?\]\s*/i
 const BLOCK_TAIL = /\s*<dcp-message-id>b\d+<\/dcp-message-id>\s*$/i
 
 const bullets = (issues: string[]) => (issues.length === 1 ? issues[0] : issues.map(issue => `- ${issue}`).join('\n'))
 const unwrap = (block: Block) => block.summary.replace(BLOCK_HEAD, '').replace(BLOCK_TAIL, '').trim()
 /** What a block carries verbatim: the text after its first KEPT_HEADER line; a block without one carries nothing. */
-const keptOf = (block: Block) => unwrap(block).split(KEPT_SPLIT).slice(1).join(KEPT_HEADER).trim()
+const keptOf = (block: Block) => unwrap(block).split(KEPT_SPLIT).slice(1).join(KEPT_HEADER).replace(LAUNCH_ITEM, '').trim()
 
 /** The text of a message the user typed: a prompt, or one queued while a turn ran. Hook feedback, task notifications, subagent and plugin prompts are not. */
 export function humanText(row: Row): string | null {
@@ -173,7 +175,7 @@ function keptItems(rows: readonly Row[], idx: Index, s: number, e: number, confi
     if (text !== null) items.push([s + i, `### User message\n${text}`])
   })
   for (const c of idx.calls)
-    if (c.useRow >= s && c.useRow <= e && c.resultRow !== undefined && !c.isError && c.resultText && isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns))
+    if (c.useRow >= s && c.useRow <= e && c.resultRow !== undefined && !c.isError && c.resultText && !c.isLaunch && isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns))
       items.push([c.useRow, `### Tool: ${c.name}\n${c.resultText}`])
   for (const { call, path } of saved) items.push([call.useRow, `### Saved output: ${call.name} ${label(call.input)}\n${path}`])
   return items.sort((a, b) => a[0] - b[0]).map(([, text]) => text).filter(text => text !== '')
