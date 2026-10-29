@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { applyCompression, staleCopies, wrapCompressedSummary } from './apply'
+import { applyCompression, cronCarry, staleCopies, wrapCompressedSummary } from './apply'
 import { type Plan } from './compress'
 import { tagLine } from './ids'
 import { indexRows, tagOf } from './model'
@@ -136,5 +136,43 @@ describe('applyCompression', () => {
     const out = applyCompression(t.rows, indexRows(t.rows), [], ctx)
     expect(out.filter(r => rows.some(a => a.uuid === r.uuid)).map(r => r.uuid)).toEqual(['env1', 'q1', 'tag1', 'skills2', 'env2', 'q2', 'tag2'])
     expect(out.find(r => r.uuid === 'env1')!.parentUuid).toBe(t.rows.find(r => r.uuid === 'skills1')!.parentUuid)
+  })
+})
+
+describe('cronCarry', () => {
+  // 0 prompt, 1 tag, 2..4 CronCreate a (session-only), 5..7 CronCreate d (durable), 8..10 CronCreate b, 11..13 CronDelete b, 14 prompt, 15 tag
+  function session() {
+    const t = new Transcript()
+    t.prompt('schedule', 'm0001')
+    t.call('CronCreate', { cron: '7 3 1 1 *', prompt: 'ping' }, { ref: 'm0002', result: { id: 'a', recurring: false } })
+    t.call('CronCreate', { cron: '8 3 1 1 *', prompt: 'disk' }, { ref: 'm0003', result: { id: 'd', recurring: true, durable: true } })
+    t.call('CronCreate', { cron: '*/5 * * * *', prompt: 'poll' }, { ref: 'm0004', result: { id: 'b', recurring: true } })
+    t.call('CronDelete', { id: 'b' }, { ref: 'm0005', result: { id: 'b' } })
+    t.prompt('later', 'm0006')
+    t.rows.forEach((r, i) => (r.timestamp = new Date(Date.UTC(2026, 9, 29, 20, i)).toISOString()))
+    return t
+  }
+  const note = (tasks: unknown[], ended: string[] = []) => ({ type: 'attachment', uuid: 'note', attachment: { type: 'session_cron_carry', tasks, ended } })
+
+  test('carries the session-only crons the removed calls made, less deleted and durable ones, after the previous note\'s tasks', () => {
+    const t = session()
+    const old = { id: 'o', cron: '1 1 1 1 *', prompt: 'old', createdAt: 1, recurring: false }
+    t.rows.splice(0, 0, { ...note([old, { id: 'x', cron: '2 2 2 2 *', prompt: 'gone', createdAt: 2, recurring: false }], ['x']), parentUuid: null })
+    t.rows[1].parentUuid = 'note'
+    const out = applyCompression(t.rows, indexRows(t.rows), [plan(1, 14, 'S')], ctx)
+    const notes = out.filter(r => r.attachment?.type === 'session_cron_carry')
+    expect(notes.map(r => r.uuid)).toEqual([out[1].uuid]) // right after the summary, which the next prompt now hangs from via the note
+    expect(out[1]).toMatchObject({ parentUuid: out[0].uuid, sessionId: 'NEW', timestamp: out[0].timestamp })
+    expect(out[2].parentUuid).toBe(out[1].uuid)
+    expect(out[1].attachment).toEqual({ type: 'session_cron_carry', tasks: [old, { id: 'a', cron: '7 3 1 1 *', prompt: 'ping', createdAt: Date.parse(t.rows[3].timestamp), recurring: false }], ended: ['x', 'b'] })
+    expect(out[0].parentUuid).toBe(null) // the summary's parent was the replaced note
+  })
+
+  test('writes no note when no cron call is removed, and fails loudly on a CronCreate result without a job id', () => {
+    const t = session()
+    expect(cronCarry(t.rows, indexRows(t.rows), new Set([0, 14]))).toBeNull()
+    expect(applyCompression(t.rows, indexRows(t.rows), [], ctx).some(r => r.attachment?.type === 'session_cron_carry')).toBe(false)
+    t.rows[3].toolUseResult = {}
+    expect(() => cronCarry(t.rows, indexRows(t.rows), new Set([2]))).toThrow('CronCreate toolu_3 at row 2 has no job id or timestamp to carry: {}')
   })
 })

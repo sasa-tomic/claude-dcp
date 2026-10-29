@@ -39,9 +39,33 @@ export function staleCopies(rows: readonly Row[]): number[] {
   })
 }
 
+const CRON_CARRY = 'session_cron_carry'
+const isCronCarry = (row: Row) => row.type === 'attachment' && row.attachment?.type === CRON_CARRY
+
+/** Claude Code re-arms a session's crons on resume from its CronCreate calls less its CronDelete ones, and from the last
+    session_cron_carry note. The note the fork writes when it removes such calls: the previous note's tasks plus the crons the removed
+    calls made, less the ended ones; null when it removes none. */
+export function cronCarry(rows: readonly Row[], idx: Index, removed: ReadonlySet<number>): Row | null {
+  const gone = idx.calls.filter(c => removed.has(c.useRow) && !c.isError && (c.name === 'CronCreate' || c.name === 'CronDelete'))
+  if (gone.length === 0) return null
+  const notes = rows.filter(isCronCarry).map(r => r.attachment)
+  const ended = new Set<string>([...notes.flatMap(n => n.ended ?? []), ...idx.calls.filter(c => c.name === 'CronDelete' && !c.isError).map(c => c.input.id)])
+  const made = gone.flatMap(c => {
+    const result = rows[c.resultRow!].toolUseResult
+    if (c.name !== 'CronCreate' || result.durable === true) return []
+    const createdAt = Date.parse(rows[c.useRow].timestamp)
+    if (typeof result.id !== 'string' || Number.isNaN(createdAt)) throw new Error(`CronCreate ${c.id} at row ${c.useRow} has no job id or timestamp to carry: ${JSON.stringify(result)}`)
+    return [{ id: result.id, cron: c.input.cron, prompt: c.input.prompt, createdAt, recurring: result.recurring === true }]
+  })
+  const tasks = [...(notes.at(-1)?.tasks ?? []), ...made].filter(t => !ended.has(t.id))
+
+  return { ...notes.at(-1), type: CRON_CARRY, tasks, ended: [...ended] }
+}
+
 export type ApplyContext = { sessionId: string; newUuid: () => string }
 
-/** Replaces each planned range with one summary user row and drops superseded attachments, relinking the parentUuid chain; rows are never mutated. */
+/** Replaces each planned range with one summary user row and drops superseded attachments, relinking the parentUuid chain; rows are never mutated.
+    When it removes cron calls, one cron carry note replaces the earlier ones. */
 export function applyCompression(rows: readonly Row[], idx: Index, plans: readonly Plan[], ctx: ApplyContext): Row[] {
   const ordered = [...plans].sort((a, b) => a.s - b.s)
   const redirect = new Map<string, string | null>()
@@ -61,7 +85,9 @@ export function applyCompression(rows: readonly Row[], idx: Index, plans: readon
         redirect.set(rows[i].uuid, summary.uuid)
       }
   })
-  for (const i of staleCopies(rows)) {
+  const carry = cronCarry(rows, idx, removed)
+  const superseded = [...staleCopies(rows), ...(carry ? rows.flatMap((r, i) => (isCronCarry(r) ? [i] : [])) : [])]
+  for (const i of superseded) {
     removed.add(i)
     redirect.set(rows[i].uuid, rows[i].parentUuid ?? null)
   }
@@ -80,5 +106,11 @@ export function applyCompression(rows: readonly Row[], idx: Index, plans: readon
     for (const key of ['sessionId', 'session_id']) if (key in copy) copy[key] = ctx.sessionId
     out.push(copy)
   })
-  return out
+  if (!carry) return out
+  // right after the last summary: Claude Code may resume a fork short of its last rows, but the summaries are always on the chain it loads
+  const lastSummary = summaryAt.get(Math.max(...summaryAt.keys()))!.uuid
+  const at = out.findIndex(r => r.uuid === lastSummary)
+  const summary = out[at]
+  const note: Row = { parentUuid: summary.uuid, ...Object.fromEntries(SUMMARY_ROW_FIELDS.filter(f => f in summary).map(f => [f, summary[f]])), type: 'attachment', uuid: ctx.newUuid(), sessionId: ctx.sessionId, attachment: carry }
+  return [...out.slice(0, at + 1), note, ...out.slice(at + 1).map(r => (r.parentUuid === summary.uuid ? { ...r, parentUuid: note.uuid } : r))]
 }
