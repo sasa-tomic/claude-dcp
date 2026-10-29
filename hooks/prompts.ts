@@ -74,6 +74,9 @@ export const continuePrompt = (removed: string) => reminder([`Compressions appli
 export const AFTER_CALL = 'Write no text before the call; after it, answer with the single word Compressed.'
 
 /** What /dcp-prune asks: the largest closed chunks, summarised densely, whatever the context size. */
+/** The /dcp-prune focus over the max limit when none is given. */
+export const MERGE_HINT = 'merge all older compressed blocks into one dense block'
+
 export function prunePrompt(tool: string, hint: string): string {
   return reminder(
     [

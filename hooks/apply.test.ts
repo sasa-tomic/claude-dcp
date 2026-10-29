@@ -119,4 +119,22 @@ describe('applyCompression', () => {
     expect(out.find(r => r.uuid === 'other')!.parentUuid).toBe('u1')
     expect(out.filter(r => r.attachment?.type === 'nested_memory').map(r => r.uuid)).toEqual(['other', 'new'])
   })
+  test('drops all but the newest of identical attachments; differing bodies, queued commands and id tags stay', () => {
+    const t = session()
+    const att = (uuid: string, attachment: Record<string, any>, body: string) => ({ ...t.rows[0], uuid, type: 'attachment', attachment, rendered: [{ content: body }] })
+    const rows = [
+      att('skills1', { type: 'skill_listing' }, 'skills'),
+      att('env1', { type: 'environment' }, 'cwd /a'),
+      att('q1', { type: 'queued_command', prompt: 'tick' }, 'tick'),
+      att('tag1', { type: 'hook_additional_context', hookName: 'prompt.submit', content: ['<dcp-message-id>m0009</dcp-message-id>'] }, 'same'),
+      att('skills2', { type: 'skill_listing' }, 'skills'),
+      att('env2', { type: 'environment' }, 'cwd /b'),
+      att('q2', { type: 'queued_command', prompt: 'tick' }, 'tick'),
+      att('tag2', { type: 'hook_additional_context', hookName: 'prompt.submit', content: ['<dcp-message-id>m0010</dcp-message-id>'] }, 'same'),
+    ]
+    t.rows.push(...rows.map((r, i) => ({ ...r, parentUuid: i === 0 ? t.rows.at(-1)!.uuid : rows[i - 1].uuid })))
+    const out = applyCompression(t.rows, indexRows(t.rows), [], ctx)
+    expect(out.filter(r => rows.some(a => a.uuid === r.uuid)).map(r => r.uuid)).toEqual(['env1', 'q1', 'tag1', 'skills2', 'env2', 'q2', 'tag2'])
+    expect(out.find(r => r.uuid === 'env1')!.parentUuid).toBe(t.rows.find(r => r.uuid === 'skills1')!.parentUuid)
+  })
 })

@@ -13,23 +13,35 @@ export function wrapCompressedSummary(blockId: number, summary: string): string 
 
 // Rows that go with the conversation: messages, task notifications a turn took in, this plugin's id tags, and the token-count reminders,
 // which are stale as soon as the next one arrives. Other attachments (skill and tool listings, instructions, environment, memory) are
-// state Claude Code supplies and stay.
+// state Claude Code supplies and stay, less the copies staleCopies finds superseded.
 const isRemovable = (row: Row) =>
   row.type === 'user' || row.type === 'assistant' || isQueuedCommand(row) || tagOf(row) !== null || (row.type === 'attachment' && row.attachment?.type === 'total_tokens_reminder')
 
-const isMemory = (row: Row) => row.type === 'attachment' && row.attachment?.type === 'nested_memory'
+// The key under which a later attachment supersedes an earlier one: a memory file (CLAUDE.md) by its path, as Claude Code attaches the whole file
+// again on resume and on entering its directory and only the newest copy is current; any other attachment by the body the model is sent, as an
+// identical later copy repeats it. Queued commands and this plugin's id tags are conversation, not state, and never qualify.
+const supersedeKey = (row: Row): string | null => {
+  if (row.type !== 'attachment' || isQueuedCommand(row) || tagOf(row) !== null) return null
+  if (row.attachment?.type === 'nested_memory') return `memory:${row.attachment.path}`
+  return row.rendered ? JSON.stringify(row.rendered) : null
+}
 
-/** Copies of a memory file (CLAUDE.md) that a later copy of the same path supersedes: Claude Code attaches the whole file again on resume and on
- * entering its directory, and only the newest copy is current. */
+/** Attachments a later one supersedes: older copies of a memory file and repeats of an identical attachment; the newest stays. */
 export function staleCopies(rows: readonly Row[]): number[] {
   const newest = new Map<string, number>()
-  rows.forEach((row, i) => isMemory(row) && newest.set(row.attachment.path, i))
-  return rows.flatMap((row, i) => (isMemory(row) && newest.get(row.attachment.path) !== i ? [i] : []))
+  rows.forEach((row, i) => {
+    const key = supersedeKey(row)
+    if (key !== null) newest.set(key, i)
+  })
+  return rows.flatMap((row, i) => {
+    const key = supersedeKey(row)
+    return key !== null && newest.get(key) !== i ? [i] : []
+  })
 }
 
 export type ApplyContext = { sessionId: string; newUuid: () => string }
 
-/** Replaces each planned range with one summary user row and drops stale memory copies, relinking the parentUuid chain; rows are never mutated. */
+/** Replaces each planned range with one summary user row and drops superseded attachments, relinking the parentUuid chain; rows are never mutated. */
 export function applyCompression(rows: readonly Row[], idx: Index, plans: readonly Plan[], ctx: ApplyContext): Row[] {
   const ordered = [...plans].sort((a, b) => a.s - b.s)
   const redirect = new Map<string, string | null>()

@@ -5,7 +5,7 @@ import { CHILD_CWD, OUTPUTS, archiveSession, exec, listArchive, pruneArchive, re
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine, trailingRef } from './ids'
 import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
-import { continuePrompt, iterationNudge, limitNudge, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
+import { continuePrompt, iterationNudge, limitNudge, MERGE_HINT, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
 import { answeredRequests, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
 import { isProtected } from './protected'
 import { foldCompressInput, STUB_LIMIT_CHARS, STUB_MAX_CHARS, stopPrompt, stopTier } from './stop'
@@ -556,10 +556,13 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'dcp-prune' }, async ($, e) =>
     answer($, async () => {
       state.pruning = true
+      const { context } = await $.session.usage()
+      const overMax = context.tokens !== undefined && context.tokens > resolveLimit(config.maxContextLimit, context.window)
+      const hint = e.args.trim() || (overMax ? MERGE_HINT : '')
       // the host refuses a submit from inside this hook, which holds the turn the prompt would wait for
       $.clock.after(RESUME_DELAY_MS, async () => {
         try {
-          await $.prompt.submit({ text: prunePrompt(COMPRESS_TOOL, e.args.trim()), asUser: true })
+          await $.prompt.submit({ text: prunePrompt(COMPRESS_TOOL, hint), asUser: true })
         } catch (err) {
           state.pruning = false
           await report($, err)

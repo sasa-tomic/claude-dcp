@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 import { COMPRESS_CALL, CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, step, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
-import { AFTER_CALL } from './prompts'
+import { AFTER_CALL, MERGE_HINT } from './prompts'
 import { emptyStats, recordFirstRequest, recordFork, type TurnUsage } from './stats'
 import { Transcript } from './rows.fixture'
 import { parseTranscript, serializeTranscript } from './transcript'
@@ -74,14 +74,14 @@ describe('session.start', () => {
 
 describe('finding the transcript', () => {
   test('finds it by session id in whichever project folder holds it, not by the current directory', async ($, on) => {
-    world(on, { tokens: 160000, rows: () => conversation().rows })
+    world(on, { tokens: 110000, rows: () => conversation().rows })
     await start($)
     const { context } = await $.tool.call({ tool: 'Read', file_path: '/x' })
     expect(context![0]).toContain('CRITICAL: the context is over the maximum limit.')
   })
 
   test('reports loudly when no project folder holds the session transcript', async ($, on) => {
-    const { seen } = world(on, { tokens: 160000, rows: () => conversation().rows, exists: false })
+    const { seen } = world(on, { tokens: 110000, rows: () => conversation().rows, exists: false })
     await start($)
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     expect(seen.toasts[0]).toBe('dcp: no transcript found for session old-id')
@@ -119,7 +119,7 @@ describe('prompt.submit', () => {
   })
 
   test('attaches only the id tag, whatever the context size: the end-of-turn stop hook does the nudging', async ($, on) => {
-    world(on, { tokens: 160000, rows: () => conversation().rows })
+    world(on, { tokens: 110000, rows: () => conversation().rows })
     await start($)
     expect((await submit($)).context).toEqual(['<dcp-message-id>m0004</dcp-message-id>'])
   })
@@ -147,7 +147,7 @@ describe('tool.call tagging and nudges', () => {
   })
 
   test('over the max limit, sends the emergency nudge first and then every nudgeFrequency results', async ($, on) => {
-    world(on, { tokens: 160000, rows: () => conversation().rows })
+    world(on, { tokens: 110000, rows: () => conversation().rows })
     await start($)
     const contexts = []
     for (let i = 0; i < 6; i++) contexts.push((await $.tool.call({ tool: 'Read', file_path: '/x' })).context!)
@@ -159,7 +159,7 @@ describe('tool.call tagging and nudges', () => {
   })
 
   test('sends no nudge while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
-    world(on, { tokens: 160000, rows: () => conversation().rows, store: { 'stats2:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) } })
+    world(on, { tokens: 110000, rows: () => conversation().rows, store: { 'stats2:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) } })
     await start($)
     expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
   })
@@ -168,13 +168,13 @@ describe('tool.call tagging and nudges', () => {
     const t = new Transcript()
     t.prompt('goal', 'm0001')
     t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
-    world(on, { tokens: 160000, rows: () => t.rows })
+    world(on, { tokens: 110000, rows: () => t.rows })
     await start($)
     expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
   })
 
   test('between the limits, sends the iteration nudge from the 15th result of a turn on, every nudgeFrequency results', async ($, on) => {
-    world(on, { tokens: 120000, rows: () => conversation().rows })
+    world(on, { tokens: 70000, rows: () => conversation().rows })
     await start($)
     const contexts = []
     for (let i = 0; i < 20; i++) contexts.push((await $.tool.call({ tool: 'Read', file_path: '/x' })).context!)
@@ -185,7 +185,7 @@ describe('tool.call tagging and nudges', () => {
   })
 
   test('under the min limit, sends no nudge however many results followed the prompt', async ($, on) => {
-    world(on, { tokens: 90000, rows: () => conversation().rows })
+    world(on, { tokens: 40000, rows: () => conversation().rows })
     await start($)
     const counts = []
     for (let i = 0; i < 20; i++) counts.push((await $.tool.call({ tool: 'Read', file_path: '/x' })).context!.length)
@@ -193,7 +193,7 @@ describe('tool.call tagging and nudges', () => {
   })
 
   test('sends no nudge while a queued compression waits for the next request, which applies it', async ($, on) => {
-    world(on, { tokens: 160000, rows: () => conversation().rows })
+    world(on, { tokens: 110000, rows: () => conversation().rows })
     await start($)
     await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'S' }])
     expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
@@ -212,10 +212,10 @@ describe('compress tool', () => {
   })
 
   test('under the min limit, denies a summary longer than a stub so nothing is paraphrased', async ($, on) => {
-    world(on, { tokens: 99000, rows: () => conversation().rows })
+    world(on, { tokens: 49000, rows: () => conversation().rows })
     await start($)
     const r = await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(301) }])
-    expect(r.deny).toBe('Context is 99.0k, under the 100000 limit: summaries must be stubs of about 200 characters, 300 at most (what was dropped and why). m0001..m0003 has 301.')
+    expect(r.deny).toBe('Context is 49.0k, under the 50000 limit: summaries must be stubs of about 200 characters, 300 at most (what was dropped and why). m0001..m0003 has 301.')
     expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(300) }])).result).toContain('Queued')
   })
 
@@ -224,16 +224,16 @@ describe('compress tool', () => {
     t.block(1, 'earlier work')
     t.prompt('goal', 'm0001')
     t.call('Bash', { command: 'ls' }, { ref: 'm0002' })
-    world(on, { tokens: 99000, rows: () => t.rows })
+    world(on, { tokens: 49000, rows: () => t.rows })
     await start($)
     expect((await compress($, [{ startId: 'b1', endId: 'm0002', summary: 'stub' }])).deny).toBe(
-      'Context is 99.0k, under the 100000 limit: ranges must not cover compressed blocks; merge them only over the limit. b1..m0002 covers b1.',
+      'Context is 49.0k, under the 50000 limit: ranges must not cover compressed blocks; merge them only over the limit. b1..m0002 covers b1.',
     )
     expect((await compress($, [{ startId: 'm0001', endId: 'm0002', summary: 'stub' }])).result).toContain('Queued')
   })
 
   test('from the min limit up, accepts a full summary', async ($, on) => {
-    world(on, { tokens: 100000, rows: () => conversation().rows })
+    world(on, { tokens: 50000, rows: () => conversation().rows })
     await start($)
     expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(5000) }])).result).toContain('Queued')
   })
@@ -538,7 +538,7 @@ describe('turn.complete', () => {
 
   test('a fork over the max limit is made however little it removes', async ($, on) => {
     const t = tailHeavy()
-    const { clock, seen } = world(on, { tokens: 160000, rows: () => t.rows })
+    const { clock, seen } = world(on, { tokens: 110000, rows: () => t.rows })
     await start($)
     await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'read' }])
     await complete($)
@@ -579,7 +579,7 @@ describe('turn.complete', () => {
 
   test('reports growth when the summary is larger than what it replaces', async ($, on) => {
     const session = { id: ID, switchOnResume: true }
-    const { clock, seen } = world(on, { tokens: 160000, rows: () => conversation().rows, session })
+    const { clock, seen } = world(on, { tokens: 110000, rows: () => conversation().rows, session })
     await start($)
     await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'verbose '.repeat(500) }])
     await complete($)
@@ -771,8 +771,29 @@ describe('/dcp-prune', () => {
     expect(seen.origins).toEqual([expect.objectContaining({ asUser: true })]) // read bare, without the engine's plugin frame
   })
 
+  test('over the max limit without a hint, asks to merge all older blocks; a given hint or a context under the max keeps its own focus', async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 100001, rows: () => conversation().rows })
+    await start($)
+    await prune($)
+    await clock.advance(1000)
+    expect(seen.prompts[0]).toContain(`Focus: ${MERGE_HINT}`)
+    await complete($)
+    await prune($, 'the audit work')
+    await clock.advance(1000)
+    expect(seen.prompts[1]).toContain('Focus: the audit work')
+    expect(seen.prompts[1]).not.toContain(MERGE_HINT)
+  })
+
+  test('under the max limit without a hint, asks for no focus', async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 100000, rows: () => conversation().rows })
+    await start($)
+    await prune($)
+    await clock.advance(1000)
+    expect(seen.prompts[0]).not.toContain('Focus:')
+  })
+
   test('reports a refused submit loudly and drops the request', async ($, on) => {
-    const { clock, seen } = world(on, { tokens: 99000, rows: () => conversation().rows, failing: 'prompt.submit' })
+    const { clock, seen } = world(on, { tokens: 49000, rows: () => conversation().rows, failing: 'prompt.submit' })
     await start($)
     await prune($)
     await clock.advance(1000)
@@ -781,7 +802,7 @@ describe('/dcp-prune', () => {
   })
 
   test('lets a full summary through under the min limit, which the stub rule would deny, and only until its turn ends', async ($, on) => {
-    const { clock } = world(on, { tokens: 99000, rows: () => conversation().rows })
+    const { clock } = world(on, { tokens: 49000, rows: () => conversation().rows })
     await start($)
     await prune($)
     expect((await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'x'.repeat(500) }])).result).toContain('Queued')
@@ -863,7 +884,7 @@ describe('classic.Stop', () => {
   })
 
   test('from the min limit up, asks to compress and merge the largest chunks', async ($, on) => {
-    await toolTurn($, on, 100000)
+    await toolTurn($, on, 50000)
     const { block } = await stop($)
     expect(block).toContain('compress and merge')
     expect(block).not.toContain('max 200 chars')
@@ -879,7 +900,7 @@ describe('classic.Stop', () => {
   test('the max limit is raised by the tokens the active summaries hold', async ($, on) => {
     const t = conversation()
     t.block(1, 'S'.repeat(4000))
-    world(on, { tokens: 151000, rows: () => t.rows })
+    world(on, { tokens: 101000, rows: () => t.rows })
     await start($)
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     const { block } = await stop($)
@@ -891,7 +912,7 @@ describe('classic.Stop', () => {
     const t = new Transcript()
     t.prompt('goal', 'm0001')
     t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
-    const { seen } = world(on, { tokens: 160000, rows: () => t.rows })
+    const { seen } = world(on, { tokens: 110000, rows: () => t.rows })
     await start($)
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     expect((await stop($)).block).toBeUndefined()
@@ -904,7 +925,7 @@ describe('classic.Stop', () => {
   })
 
   test('asks again on a later prompt although an earlier compression still waits in the queue', async ($, on) => {
-    await toolTurn($, on, 160000)
+    await toolTurn($, on, 110000)
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'dropped' }])
     expect((await stop($)).block).toBeUndefined()
     await submit($)
@@ -913,7 +934,7 @@ describe('classic.Stop', () => {
   })
 
   test('lets the stop through when the hook already held it back once', async ($, on) => {
-    await toolTurn($, on, 160000)
+    await toolTurn($, on, 110000)
     expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
   })
 
@@ -925,14 +946,14 @@ describe('classic.Stop', () => {
   })
 
   test('still asks without tool results when the context is over the min limit', async ($, on) => {
-    world(on, { tokens: 100000, rows: () => conversation().rows })
+    world(on, { tokens: 50000, rows: () => conversation().rows })
     await start($)
     await submit($)
     expect((await stop($)).block).toContain('compress and merge')
   })
 
   test('lets the stop through when the model has already queued a compression this turn', async ($, on) => {
-    await toolTurn($, on, 160000)
+    await toolTurn($, on, 110000)
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'dropped' }])
     expect((await stop($)).block).toBeUndefined()
   })

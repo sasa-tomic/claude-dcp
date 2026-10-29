@@ -44,7 +44,7 @@ Then `/plugin`, Installed tab, dcp, Update now, then `/reload-plugins`.
 
 ## Pruning on demand
 
-`/dcp-prune [hint]` asks the model to compress the largest closed chunks now, with dense summaries; the hint says where to focus (`/dcp-prune the audit work`). That one compress is not held to the stub rule under `minContextLimit`, and its fork ignores `minRemovedShare`. The fork still happens when the turn ends.
+`/dcp-prune [hint]` asks the model to compress the largest closed chunks now, with dense summaries; the hint says where to focus (`/dcp-prune the audit work`). Without a hint over `maxContextLimit`, it asks to merge all older compressed blocks into one dense block. That one compress is not held to the stub rule under `minContextLimit`, and its fork ignores `minRemovedShare`. The fork still happens when the turn ends.
 
 ## Old sessions
 
@@ -70,7 +70,7 @@ A fork rewrites the prompt cache from its first change on, so a saving in contex
 - **Timing:** `compress` validates and queues. Before the next request the turn is stopped (`turn.step`, `$.turn.abort`); once the transcript holds every call the turn ran, the session is forked, switched, and a plugin prompt continues the work. While a subagent works, or before two answered requests can size the fork, the queue waits for the turn end instead. A later call folds into the queue: a range inside a queued one is skipped, one covering queued ranges replaces them, a partial overlap is refused. A fork that would remove less than `minRemovedShare` of what it makes the cache rewrite waits for a larger one, unless the context is over the max. The unsent draft in the prompt box is read before the switch and put back after it.
 - **Nudges:** opencode's turn and iteration nudges are replaced by a `classic.Stop` hook (`hooks/stop.ts`): the first stop of a turn is held back once with a prompt by context size. Under `minContextLimit` it asks only to drop dead ranges with stubs of about 200 characters (`compress` rejects summaries over 300); from the min it asks to compress and merge the largest chunks; over `maxContextLimit` it asks to be very aggressive. After tool results, at most every `nudgeFrequency`: the limit nudge over the max, and the iteration nudge over the min from the 15th tool result of a turn. Each lists the uncompressed history per user turn as ready ranges with sizes, prompts and tools, and the largest single messages.
 - **Headless:** a `claude -p` or SDK run never uses the compressed session, so dcp stays off in it (no tool, prompt, tags or stop hook) unless `DCP_HEADLESS=1` is set.
-- **Strategies:** when a compress is applied: deduplication, purge-errors, older copies of a memory file (CLAUDE.md) that a newer copy of the same path supersedes are dropped, and dcp's answered nudges and end-of-turn prompts are cut to their id or a stub.
+- **Strategies:** when a compress is applied: deduplication, purge-errors, older copies of a memory file (CLAUDE.md) that a newer copy of the same path supersedes and repeats of an identical attachment (skill listing, environment notice) are dropped, the newest staying, and dcp's answered nudges and end-of-turn prompts are cut to their id or a stub.
 - **Tool names:** prompts name the registered tool `mcp__dcp__compress`; protected tools default to Claude Code's `Task`, `Agent`, `Skill`, `TodoWrite`.
 - **Tokens:** context size and the tokens a fork removed are the API's counts; sizes of summaries and messages are estimates (see Measuring).
 - **Log:** `~/.claude/dcp.log`; failures also toast.
