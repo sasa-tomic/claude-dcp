@@ -108,6 +108,14 @@ describe('kept verbatim', () => {
     expect(() => plan(session(), [range('m0001', 'm0002', `x\n${KEPT_HEADER}\ny`)])).toThrow(`content[0].summary must not contain ${KEPT_HEADER}`)
   })
 
+  test('refuses a summary citing a block the range replaces, whose text would be gone; others may be cited', () => {
+    const t = session()
+    t.block(1, 'old')
+    t.block(2, 'other')
+    expect(() => plan(t, [range('b1', 'b1', 'see (b1)\n(b2)')])).toThrow('content[0].summary cites (b1), which this range replaces')
+    expect(plan(t, [range('b1', 'b1', 'see (b2)')])[0].finalSummary).toBe('see (b2)')
+  })
+
   test('refuses the pruned-call marker as a summary: it would empty the block', () => {
     expect(() => plan(session(), [range('m0001', 'm0002', PRUNED_COMPRESS_SUMMARY)])).toThrow(`content[0].summary must not contain ${PRUNED_COMPRESS_SUMMARY}`)
   })

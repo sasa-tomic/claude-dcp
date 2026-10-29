@@ -6,6 +6,14 @@ export const PRUNED_TOOL_OUTPUT = '[output pruned: duplicate or stale]'
 export const PRUNED_TOOL_ERROR_INPUT = '[input pruned: the call failed]'
 export const PRUNED_QUESTION_INPUT = "[questions pruned: the answers are in the output]"
 export const PRUNED_COMPRESS_SUMMARY = '[summary pruned: it is in the block the call made]'
+export const PRUNED_STOP_FEEDBACK = 'Stop hook feedback:\n[dcp prompt pruned: it was answered]'
+
+const REMINDER = /<dcp-system-reminder>[\s\S]*?<\/dcp-system-reminder>\n?/g
+const isNudge = (row: Row) => row.type === 'attachment' && row.attachment?.type === 'hook_additional_context' && Array.isArray(row.attachment.content) && row.attachment.content.some((c: string) => c.includes('<dcp-system-reminder>'))
+const isStopFeedback = (row: Row) => row.type === 'user' && row.isMeta === true && typeof row.message?.content === 'string' && row.message.content.startsWith('Stop hook feedback:') && row.message.content.includes(COMPRESS_TOOL) && row.message.content !== PRUNED_STOP_FEEDBACK
+
+/** This plugin's nudges and end-of-turn prompts: each is rebuilt from the current state when due, so any in the transcript has been answered. */
+export const staleReminders = (rows: readonly Row[]): number[] => rows.flatMap((row, i) => (isNudge(row) || isStopFeedback(row) ? [i] : []))
 
 const QUESTION_TOOL = 'AskUserQuestion'
 const KEPT_OUTPUT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']
@@ -48,7 +56,9 @@ export function applyPrunes(rows: readonly Row[], idx: Index, pruned: ReadonlySe
     if (!pruned.has(call.id)) continue
     for (const row of [call.useRow, call.resultRow]) if (row !== undefined) byRow.set(row, [...(byRow.get(row) ?? []), call])
   }
+  const reminders = new Set(staleReminders(rows))
   return rows.map((row, i) => {
+    if (reminders.has(i)) return stripReminder(row)
     const calls = byRow.get(i)
     if (!calls) return row
     const copy: Row = structuredClone(row)
@@ -67,4 +77,13 @@ export function applyPrunes(rows: readonly Row[], idx: Index, pruned: ReadonlySe
     }
     return copy
   })
+}
+
+/** A nudge keeps its message id; the rest goes, from what the model is sent (`rendered`) and from the stored attachment alike. */
+function stripReminder(row: Row): Row {
+  if (row.type === 'user') return { ...row, message: { ...row.message, content: PRUNED_STOP_FEEDBACK } }
+  const copy: Row = structuredClone(row)
+  copy.attachment.content = copy.attachment.content.map((c: string) => c.replace(REMINDER, '')).filter((c: string) => c.length > 0)
+  for (const part of copy.rendered ?? []) if (typeof part.content === 'string') part.content = part.content.replace(REMINDER, '')
+  return copy
 }

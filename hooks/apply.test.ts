@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { applyCompression, wrapCompressedSummary } from './apply'
+import { applyCompression, staleCopies, wrapCompressedSummary } from './apply'
 import { type Plan } from './compress'
 import { tagLine } from './ids'
 import { indexRows, tagOf } from './model'
@@ -106,5 +106,17 @@ describe('applyCompression', () => {
     const out = applyCompression(t.rows, indexRows(t.rows), [plan(2, 6, 'S')], ctx)
     expect(JSON.stringify(t.rows)).toBe(before)
     expect(summaryOf(out)).toMatchObject({ type: 'user', isSidechain: false, userType: 'external', cwd: '/w', timestamp: 'T1' })
+  })
+  test('drops memory copies a newer copy of the same path supersedes, wherever they are, and relinks past them', () => {
+    const t = session()
+    const memory = (uuid: string, path: string, parentUuid: string) => ({ ...t.rows[0], uuid, parentUuid, type: 'attachment', attachment: { type: 'nested_memory', path }, rendered: [{ content: `Contents of ${path}` }] })
+    t.rows.splice(1, 0, memory('old', '/a/CLAUDE.md', 'u1'), memory('other', '/b/CLAUDE.md', 'old'))
+    t.rows[3].parentUuid = 'other'
+    t.rows.push(memory('new', '/a/CLAUDE.md', t.rows.at(-1)!.uuid))
+    expect(staleCopies(t.rows)).toEqual([1])
+    const out = applyCompression(t.rows, indexRows(t.rows), [], ctx)
+    expect(out.map(r => r.uuid)).not.toContain('old')
+    expect(out.find(r => r.uuid === 'other')!.parentUuid).toBe('u1')
+    expect(out.filter(r => r.attachment?.type === 'nested_memory').map(r => r.uuid)).toEqual(['other', 'new'])
   })
 })

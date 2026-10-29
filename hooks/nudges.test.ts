@@ -26,6 +26,15 @@ describe('token estimates', () => {
   })
 })
 
+describe('rowChars', () => {
+  test('counts message content and what the model sees of an attachment, and nothing of rows the model never sees', () => {
+    const rendered = [{ content: 'Contents of /a/CLAUDE.md' }]
+    expect(rowChars([{ type: 'user', message: { content: 'hi' } }])).toBe(4)
+    expect(rowChars([{ type: 'attachment', attachment: { type: 'nested_memory' }, rendered }])).toBe(JSON.stringify(rendered).length)
+    expect(rowChars([{ type: 'attachment', attachment: { type: 'thinking_drop' } }, { type: 'last-prompt' }])).toBe(0)
+  })
+})
+
 describe('tokensPerChar', () => {
   const answer = (id: string, input: number, output: number, text = 'a', model = 'm') => ({ type: 'assistant', message: { id, model, content: [{ type: 'text', text }], usage: { input_tokens: 1, output_tokens: output, cache_read_input_tokens: input - 2, cache_creation_input_tokens: 1 } } })
   const result = (chars: number) => ({ type: 'user', message: { role: 'user', content: 'y'.repeat(chars) } })

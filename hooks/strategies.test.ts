@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
-import { PRUNED_COMPRESS_SUMMARY, PRUNED_TOOL_ERROR_INPUT, PRUNED_TOOL_OUTPUT, PRUNED_QUESTION_INPUT, applyPrunes, markPruned } from './strategies'
+import { PRUNED_COMPRESS_SUMMARY, PRUNED_STOP_FEEDBACK, staleReminders, PRUNED_TOOL_ERROR_INPUT, PRUNED_TOOL_OUTPUT, PRUNED_QUESTION_INPUT, applyPrunes, markPruned } from './strategies'
 import { COMPRESS_TOOL } from './model'
 
 const cfg = { deduplication: true, purgeErrors: true, purgeErrorsTurns: 2, protectedFilePatterns: ['**/*.env'] }
@@ -82,5 +82,28 @@ describe('applyPrunes', () => {
     expect(out[7].message.content[0].content).toBe('edited')
     expect(out[9].message.content[0].content).toBe('KEEP')
     expect(t.rows[1].message.content[0].content).toBe('BIG')
+  })
+})
+
+describe('stale reminders', () => {
+  test("strips this plugin's nudges to their id and stubs its end-of-turn prompts; other hook context and feedback stay", () => {
+    const t = new Transcript()
+    const nudge = '<dcp-system-reminder>\nCompress now\n</dcp-system-reminder>'
+    t.call('Read', { file_path: '/a' }, { ref: 'm0001' }) // 0 use, 1 result, 2 tag
+    t.rows[2].attachment.content.unshift(nudge)
+    t.rows[2].rendered = [{ content: `<system-reminder>\ntool.call hook additional context: ${nudge}\n<dcp-message-id>m0001</dcp-message-id>\n</system-reminder>` }]
+    const feedback = (content: string) => t.rows.push({ ...t.rows[0], type: 'user', isMeta: true, message: { role: 'user', content } })
+    feedback(`Stop hook feedback:\nEnd of turn. One ${COMPRESS_TOOL} call.`) // 3
+    feedback('Stop hook feedback:\nRun the linter.') // 4
+    t.call('Bash', { command: 'x' }, { ref: 'm0002' }) // 5, 6, 7 plain tag
+    expect(staleReminders(t.rows)).toEqual([2, 3])
+    const out = applyPrunes(t.rows, indexRows(t.rows), new Set())
+    expect(out[2].attachment.content).toEqual(['<dcp-message-id>m0001</dcp-message-id>'])
+    expect(out[2].rendered[0].content).toBe('<system-reminder>\ntool.call hook additional context: <dcp-message-id>m0001</dcp-message-id>\n</system-reminder>')
+    expect(out[3].message.content).toBe(PRUNED_STOP_FEEDBACK)
+    expect(out[4]).toBe(t.rows[4])
+    expect(out[7]).toBe(t.rows[7])
+    expect(t.rows[2].attachment.content[0]).toBe(nudge)
+    expect(staleReminders(out)).toEqual([])
   })
 })

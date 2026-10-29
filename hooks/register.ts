@@ -1,6 +1,6 @@
 import type { AgentStatus, Hook, Register } from 'claude-code'
 
-import { applyCompression } from './apply'
+import { applyCompression, staleCopies } from './apply'
 import { CHILD_CWD, OUTPUTS, archiveSession, exec, listArchive, pruneArchive, restoreSession, run } from './archive'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine } from './ids'
@@ -9,7 +9,7 @@ import { continuePrompt, iterationNudge, limitNudge, prunePrompt, queuedResult, 
 import { answeredRequests, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
 import { isProtected } from './protected'
 import { foldCompressInput, STUB_LIMIT_CHARS, STUB_MAX_CHARS, stopPrompt, stopTier } from './stop'
-import { applyPrunes, callSignature, markPruned, type StrategyConfig } from './strategies'
+import { applyPrunes, callSignature, markPruned, staleReminders, type StrategyConfig } from './strategies'
 import { emptyStats, hashSignature, isAwaitingFirst, recordCall, recordFirstRequest, recordFork, recordTurn, renderStats, savedTokens, type Stats, type TurnUsage } from './stats'
 import { assertAnswered, assertCurrent, parseTranscript, serializeTranscript } from './transcript'
 import type { Row } from './rows'
@@ -285,7 +285,7 @@ function draftFork(rows: readonly Row[], path: string, queued: readonly Queued[]
   const out = applyCompression(applyPrunes(rows, idx, pruned), idx, plans, { sessionId: to, newUuid: () => crypto.randomUUID() })
   const scale = tokensPerChar(rows)
   if (scale === undefined) throw new Error('the conversation has no two consecutive answered requests to measure its tokens per character on')
-  const firstChanged = Math.min(...plans.map(p => p.s), ...idx.calls.filter(c => pruned.has(c.id)).map(c => c.useRow))
+  const firstChanged = Math.min(...plans.map(p => p.s), ...idx.calls.filter(c => pruned.has(c.id)).map(c => c.useRow), ...staleCopies(rows), ...staleReminders(rows))
   return { idx, plans, pruned, out, scale, removed: tokensOf(rowChars(rows) - rowChars(out), scale), rewritten: tokensOf(rowChars(out.slice(firstChanged)), scale) }
 }
 

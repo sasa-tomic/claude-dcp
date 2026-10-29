@@ -14,9 +14,9 @@ export const approxTokens = (tokens: number) => `~${formatTokens(tokens)}`
 
 const hasText = (row: Row) => row.type === 'user' || row.type === 'assistant'
 
-const rowLength = (row: Row) => (hasText(row) ? JSON.stringify(row.message?.content).length : 0)
+const rowLength = (row: Row) => (hasText(row) ? JSON.stringify(row.message?.content).length : row.rendered ? JSON.stringify(row.rendered).length : 0)
 
-/** What a conversation weighs before it is turned into tokens: the serialized content of its messages. */
+/** What a conversation weighs before it is turned into tokens: the serialized content of its messages and of the attachments the model sees. */
 export const rowChars = (rows: readonly Row[]) => rows.reduce((sum, row) => sum + rowLength(row), 0)
 
 /** The input side of one request. */

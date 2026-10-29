@@ -192,6 +192,8 @@ export function planCompression(rows: readonly Row[], idx: Index, args: Compress
 
   return located.map(({ index, entry, s, e }) => {
     const inside = new Map([...idx.blocks].filter(([, b]) => b.row >= s && b.row <= e).sort((a, b) => a[1].row - b[1].row))
+    const cited = [...inside.keys()].filter(id => new RegExp(`\\(b${id}\\)`).test(entry.summary))
+    if (cited.length > 0) throw new PlanError(`content[${index}].summary cites ${cited.map(id => `(b${id})`).join(', ')}, which this range replaces: write what is still needed of them instead`)
     const saved = savesOf(idx, entry, index, s, e, config, outputsDir)
     const kept = keptItems(rows, idx, s, e, config, inside, saved)
     const finalSummary = [entry.summary.trim(), ...(kept.length > 0 ? [`${KEPT_HEADER}\n${kept.join('\n\n')}`] : [])].join('\n\n')

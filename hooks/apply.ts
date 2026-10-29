@@ -17,12 +17,22 @@ export function wrapCompressedSummary(blockId: number, summary: string): string 
 const isRemovable = (row: Row) =>
   row.type === 'user' || row.type === 'assistant' || isQueuedCommand(row) || tagOf(row) !== null || (row.type === 'attachment' && row.attachment?.type === 'total_tokens_reminder')
 
+const isMemory = (row: Row) => row.type === 'attachment' && row.attachment?.type === 'nested_memory'
+
+/** Copies of a memory file (CLAUDE.md) that a later copy of the same path supersedes: Claude Code attaches the whole file again on resume and on
+ * entering its directory, and only the newest copy is current. */
+export function staleCopies(rows: readonly Row[]): number[] {
+  const newest = new Map<string, number>()
+  rows.forEach((row, i) => isMemory(row) && newest.set(row.attachment.path, i))
+  return rows.flatMap((row, i) => (isMemory(row) && newest.get(row.attachment.path) !== i ? [i] : []))
+}
+
 export type ApplyContext = { sessionId: string; newUuid: () => string }
 
-/** Replaces each planned range with one summary user row, relinking the parentUuid chain; rows are never mutated. */
+/** Replaces each planned range with one summary user row and drops stale memory copies, relinking the parentUuid chain; rows are never mutated. */
 export function applyCompression(rows: readonly Row[], idx: Index, plans: readonly Plan[], ctx: ApplyContext): Row[] {
   const ordered = [...plans].sort((a, b) => a.s - b.s)
-  const redirect = new Map<string, string>()
+  const redirect = new Map<string, string | null>()
   const summaryAt = new Map<number, Row>()
   const removed = new Set<number>()
 
@@ -39,6 +49,10 @@ export function applyCompression(rows: readonly Row[], idx: Index, plans: readon
         redirect.set(rows[i].uuid, summary.uuid)
       }
   })
+  for (const i of staleCopies(rows)) {
+    removed.add(i)
+    redirect.set(rows[i].uuid, rows[i].parentUuid ?? null)
+  }
 
   const resolve = (uuid: string | null): string | null => {
     let current = uuid
