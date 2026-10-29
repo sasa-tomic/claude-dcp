@@ -65,10 +65,8 @@ describe('queuedResult', () => {
 })
 
 describe('continuePrompt', () => {
-  test('is a reminder, not a user message, that says what was removed', () => {
-    expect(continuePrompt('~5.0k removed')).toBe(
-      '<dcp-system-reminder>Your compressions were applied (~5.0k removed) and the session continues in a fork. This is not a user message: continue the task where you left off.</dcp-system-reminder>',
-    )
+  test('is a short reminder that says what was removed', () => {
+    expect(continuePrompt('~5.0k removed')).toBe('<dcp-system-reminder>\nCompressions applied (~5.0k removed). Continue the task.\n</dcp-system-reminder>')
   })
 })
 
@@ -76,12 +74,12 @@ describe('prunePrompt', () => {
   test('asks for one dense compress call and a one-word answer, naming the tool', () => {
     const text = prunePrompt(TOOL, '')
     expect(text).toContain(`one ${TOOL} call`)
-    expect(text).toContain('Dense summaries')
-    expect(text.endsWith(AFTER_CALL)).toBe(true)
+    expect(text).toContain('dense summaries')
+    expect(text.endsWith(`${AFTER_CALL}\n</dcp-system-reminder>`)).toBe(true)
     expect(text).not.toContain('Focus')
   })
 
   test('puts the hint in before the closing instruction', () => {
-    expect(prunePrompt(TOOL, 'the audit work')).toContain('Focus: the audit work Write no text before the call;')
+    expect(prunePrompt(TOOL, 'the audit work')).toContain('Focus: the audit work\nWrite no text before the call;')
   })
 })

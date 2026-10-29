@@ -25,7 +25,7 @@ export function world(on: On, w: World) {
   const clock = mock.clock(on)
   mock.store(on, w.store)
   mock.env(on, { HOME, ...w.env })
-  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], shell: [] as string[][], commands: [] as string[] }
+  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], commands: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
   if (w.saved) files.set(`${PROJECT}/dcp-outputs/toolu_x.txt`, { size: 1, ageDays: 0 })
@@ -56,6 +56,7 @@ export function world(on: On, w: World) {
   on('prompt.submit', (_$, e) => {
     if (w.failing === 'prompt.submit') throw new Error('refused')
     seen.prompts.push(e.text)
+    seen.origins.push(e.origin)
     return { text: e.text, context: e.context }
   })
   on('tool.call', (_$, e) => ({ result: `out of ${e.tool}`, text: `out of ${e.tool}` }) as any)

@@ -559,7 +559,7 @@ export const register: Register = (on, options) => {
       // the host refuses a submit from inside this hook, which holds the turn the prompt would wait for
       $.clock.after(RESUME_DELAY_MS, async () => {
         try {
-          await $.prompt.submit({ text: prunePrompt(COMPRESS_TOOL, e.args.trim()) })
+          await $.prompt.submit({ text: prunePrompt(COMPRESS_TOOL, e.args.trim()), asUser: true })
         } catch (err) {
           state.pruning = false
           await report($, err)
@@ -616,7 +616,7 @@ export const register: Register = (on, options) => {
     if (state.stopped) {
       state.stopped = false
       const ran = state.ran
-      await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertAnswered(rows, ran, path), true, async removed => $.prompt.submit({ text: continuePrompt(removed) })))
+      await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertAnswered(rows, ran, path), true, async removed => $.prompt.submit({ text: continuePrompt(removed), asUser: true })))
       return result
     }
     if (e.reason !== 'answer') return result

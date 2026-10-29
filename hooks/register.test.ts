@@ -301,7 +301,8 @@ describe('mid-turn apply', () => {
     expect(clones(seen)).toHaveLength(1)
     await clock.advance(1000)
     expect(seen.resumes).toEqual([`resume ${session.id}`])
-    expect(seen.prompts).toEqual([expect.stringMatching(/^<dcp-system-reminder>Your compressions were applied \(~\d+ removed\)/)])
+    expect(seen.prompts).toEqual([expect.stringMatching(/^<dcp-system-reminder>\nCompressions applied \(~\d+ removed\)/)])
+    expect(seen.origins).toEqual([expect.objectContaining({ asUser: true })])
     expect(await step($, 2)).toMatchObject({ answer: 'model answer' }) // stopped once: the next request goes out
   })
 
@@ -767,6 +768,7 @@ describe('/dcp-prune', () => {
     await clock.advance(1000)
     expect(seen.prompts).toEqual([expect.stringContaining('one mcp__dcp__compress call')])
     expect(seen.prompts[0]).toContain('Focus: the audit work')
+    expect(seen.origins).toEqual([expect.objectContaining({ asUser: true })]) // read bare, without the engine's plugin frame
   })
 
   test('reports a refused submit loudly and drops the request', async ($, on) => {

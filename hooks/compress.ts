@@ -2,6 +2,7 @@ import { parseRef } from './ids'
 import { type Block, type Index, type Unit, blockText, isQueuedCommand, promptText } from './model'
 import { isProtected } from './protected'
 import type { Row } from './rows'
+import { PRUNED_COMPRESS_SUMMARY } from './strategies'
 
 export type Entry = { startId: string; endId: string; summary: string; save?: string[] }
 export type CompressArgs = { topic: string; content: Entry[] }
@@ -54,6 +55,7 @@ function checkArgs(args: CompressArgs): void {
     for (const field of ['startId', 'endId', 'summary'] as const)
       if (typeof entry?.[field] !== 'string' || entry[field].trim() === '') throw new PlanError(`content[${i}].${field} must be a non-empty string`)
     if (entry.summary.includes(KEPT_HEADER)) throw new PlanError(`content[${i}].summary must not contain ${KEPT_HEADER}: the environment adds that part`)
+    if (entry.summary.includes(PRUNED_COMPRESS_SUMMARY)) throw new PlanError(`content[${i}].summary must not contain ${PRUNED_COMPRESS_SUMMARY}: that marks a pruned earlier call; write the summary of this range`)
     if (entry.save !== undefined && (!Array.isArray(entry.save) || !entry.save.every(ref => typeof ref === 'string'))) throw new PlanError(`content[${i}].save must be an array of tool-output IDs`)
   })
 }

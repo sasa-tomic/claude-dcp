@@ -3,6 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { type CompressConfig, type Entry, KEPT_HEADER, mergeQueue, planCompression } from './compress'
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
+import { PRUNED_COMPRESS_SUMMARY } from './strategies'
 
 const cfg: CompressConfig = { protectedTools: ['Task'], protectedFilePatterns: ['**/*.env'] }
 const range = (startId: string, endId: string, summary = 'S') => ({ startId, endId, summary })
@@ -105,6 +106,10 @@ describe('kept verbatim', () => {
 
   test('refuses a summary that contains the kept header', () => {
     expect(() => plan(session(), [range('m0001', 'm0002', `x\n${KEPT_HEADER}\ny`)])).toThrow(`content[0].summary must not contain ${KEPT_HEADER}`)
+  })
+
+  test('refuses the pruned-call marker as a summary: it would empty the block', () => {
+    expect(() => plan(session(), [range('m0001', 'm0002', PRUNED_COMPRESS_SUMMARY)])).toThrow(`content[0].summary must not contain ${PRUNED_COMPRESS_SUMMARY}`)
   })
 })
 
