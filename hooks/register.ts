@@ -172,8 +172,13 @@ type State = {
   active: boolean
 }
 
-// The prompt that continues a stopped turn resets these too: the fork it runs in has just shed the ranges.
 const resetTurn = (state: State) => Object.assign(state, { toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], ending: false })
+
+/** Submits a prompt of this plugin's own. $.prompt.submit skips the calling plugin's prompt.submit hook, so the turn is reset here. */
+async function submitOwn($: Dollar, state: State, text: string) {
+  resetTurn(state)
+  await $.prompt.submit({ text, asUser: true })
+}
 
 function guidance(idx: Index, rows: readonly Row[], scale: number) {
   return [blockReport(idx.blocks, scale), historyReport(rows, idx, scale)].filter(s => s.length > 0).join('\n\n')
@@ -562,7 +567,7 @@ export const register: Register = (on, options) => {
       // the host refuses a submit from inside this hook, which holds the turn the prompt would wait for
       $.clock.after(RESUME_DELAY_MS, async () => {
         try {
-          await $.prompt.submit({ text: prunePrompt(COMPRESS_TOOL, hint), asUser: true })
+          await submitOwn($, state, prunePrompt(COMPRESS_TOOL, hint))
         } catch (err) {
           state.pruning = false
           await report($, err)
@@ -627,7 +632,7 @@ export const register: Register = (on, options) => {
     if (state.stopped) {
       state.stopped = false
       const ran = state.ran
-      await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertAnswered(rows, ran, path), true, async removed => $.prompt.submit({ text: continuePrompt(removed), asUser: true })))
+      await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertAnswered(rows, ran, path), true, removed => submitOwn($, state, continuePrompt(removed))))
       return result
     }
     if (e.reason !== 'answer') return result

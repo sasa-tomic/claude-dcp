@@ -306,6 +306,29 @@ describe('mid-turn apply', () => {
     expect(await step($, 2)).toMatchObject({ answer: 'model answer' }) // stopped once: the next request goes out
   })
 
+  test('a turn stopped again in the fork forks once the fork holds the calls of that turn alone', async ($, on) => {
+    const session = { id: ID, switchOnResume: true }
+    const again = new Transcript() // what the fork's own turn writes into it
+    again.call('Read', { file_path: '/b' }, { id: 'toolu_b', ref: 'm0004', output: 'C'.repeat(4000) })
+    again.call(TOOL, { topic: 'T', content: [] }, { id: 'toolu_again', output: 'Queued' })
+    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows, session, appended: again.rows })
+    await start($)
+    await $.tool.call({ tool: 'Read', file_path: '/a', tool_use_id: 'toolu_3' }) // the call m0002 holds, which the fork compresses away
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+    await step($)
+    await aborted($)
+    await clock.advance(1000)
+    await $.turn.start({ text: '', turnId: 'turn-2' }) // the continue prompt's turn; dcp's own submit reaches none of its hooks
+    await $.tool.call({ tool: 'Read', file_path: '/b', tool_use_id: 'toolu_b' })
+    await $.tool.call({ tool: TOOL, topic: 'T', content: [{ startId: 'm0004', endId: 'm0004', summary: 'S' }], tool_use_id: 'toolu_again' })
+    await step($, 2)
+    const ending = aborted($)
+    for (let i = 0; i < 10; i++) await clock.advance(500)
+    await ending
+    expect(seen.toasts.filter(t => t.includes('lags'))).toEqual([])
+    expect(clones(seen)).toHaveLength(2)
+  })
+
   test('forks at the turn end only once the transcript holds every call the turn ran, with its result', async ($, on) => {
     let rows = conversation().rows // the compress call and its result are not written yet
     const { clock, seen } = world(on, { tokens: 100, rows: () => rows })
