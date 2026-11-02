@@ -18,8 +18,9 @@ export const OLDER = '00000000-0000-4000-8000-000000000002'
 export const DAY = 86_400_000
 export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
+export const JOBS = `${HOME}/.claude/jobs`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -30,6 +31,9 @@ export function world(on: On, w: World) {
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
   if (w.saved) files.set(`${PROJECT}/dcp-outputs/toolu_x.txt`, { size: 1, ageDays: 0 })
   for (const [id, meta] of Object.entries(w.archived ?? {})) files.set(`${ARCHIVE}/${id}.jsonl`, { size: meta.size ?? 1, ageDays: meta.ageDays, title: meta.title })
+  // background jobs, each a folder with its state.json, beside a file that is no job
+  const texts = new Map(Object.entries(w.jobs ?? {}).map(([job, state]) => [`${JOBS}/${job}/state.json`, typeof state === 'string' ? state : JSON.stringify(state)]))
+  if (w.jobs) texts.set(`${JOBS}/pins.json`, '{}')
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('classic.Stop', () => ({}))
   on('prompt.read', () => ({ value: { text: w.draft ?? '', cursor: 0 } }))
@@ -70,13 +74,19 @@ export function world(on: On, w: World) {
       const now = await clock.now()
       return { value: [...files].filter(([p]) => p.startsWith(`${ARCHIVE}/`)).map(([p, f]) => ({ name: p.slice(ARCHIVE.length + 1), kind: 'file' as const, size: f.size, mtimeMs: now - f.ageDays * DAY, isLink: false })) }
     }
+    if (e.path === JOBS) return { value: [...texts.keys()].map(p => p.slice(JOBS.length + 1).split('/')).map(([name, inner]) => ({ name: name!, kind: inner ? ('dir' as const) : ('file' as const), size: 0, mtimeMs: 0, isLink: false })) }
     expect(e.path).toBe(PROJECTS)
     const entry = (name: string, kind: 'dir' | 'file') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
     return { value: [entry('-other', 'dir'), entry('README', 'file'), entry('-work-proj', 'dir')] }
   })
   // a folder exists while a file in it does
-  const exists = (path: string) => [...files.keys(), ...Object.keys(seen.writes)].some(p => p === path || p.startsWith(`${path}/`))
+  const exists = (path: string) => [...files.keys(), ...texts.keys(), ...Object.keys(seen.writes)].some(p => p === path || p.startsWith(`${path}/`))
   on('fs.exists', (_$, e) => ({ value: w.exists !== false && (e.path === `${PROJECTS}/-work-proj/${session.id}.jsonl` || exists(e.path)) }))
+  on('fs.read', (_$, e) => {
+    const text = seen.writes[e.path] ?? texts.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
   on('fs.write', (_$, e) => {
     seen.writes[e.path] = e.text
     return { value: undefined }

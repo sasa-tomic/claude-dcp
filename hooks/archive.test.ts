@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { ARCHIVE, DAY, HOME, ID, OLD, OLDER, PROJECT, SRC, STATUS, compress, complete, conversation, start, world } from './world.fixture'
+import { ARCHIVE, DAY, HOME, ID, JOBS, LOG, OLD, OLDER, PROJECT, SRC, STATUS, compress, complete, conversation, start, world } from './world.fixture'
 
 const GOOD_ID = '33333333-3333-4333-8333-333333333333'
 
@@ -39,6 +39,25 @@ describe('archiving after a fork', () => {
     expect(seen.shell).toEqual([])
     expect(files.has(SRC)).toBe(true)
     expect(seen.toasts.at(-1)).toContain('did not happen')
+  })
+
+  test('points the background jobs that resume the old session at the fork, and only those', async ($, on) => {
+    const job = { name: 'lead', resumeSessionId: ID, linkScanPath: SRC, linkScanOffset: 673965, updatedAt: '2026-01-01T00:00:00.000Z' }
+    const other = { resumeSessionId: OLD, linkScanPath: `${PROJECT}/${OLD}.jsonl`, linkScanOffset: 7 }
+    const { seen, clock } = await fork($, on, { jobs: { lead: job, other } })
+    const to = seen.resumes[0]!.replace('resume ', '')
+    const state = JSON.parse(seen.writes[`${JOBS}/lead/state.json`]!)
+    expect(state).toEqual({ ...job, resumeSessionId: to, linkScanPath: `${PROJECT}/${to}.jsonl`, linkScanOffset: 0, updatedAt: state.updatedAt })
+    expect(state.updatedAt).not.toBe(job.updatedAt)
+    expect(Date.parse(state.updatedAt)).toBeLessThanOrEqual(await clock.now())
+    expect(seen.writes[`${JOBS}/other/state.json`]).toBeUndefined()
+    expect(seen.writes[LOG]).toContain(`background jobs now resuming ${to}: lead`)
+  })
+
+  test('leaves the old session in place and reports it when a job state cannot be read', async ($, on) => {
+    const { seen, files } = await fork($, on, { jobs: { broken: '{not json' } })
+    expect(files.has(SRC)).toBe(true)
+    expect(seen.toasts.at(-1)).toContain(`${JOBS}/broken/state.json`)
   })
 
   test('reports a failed move after the switch instead of ignoring it', async ($, on) => {

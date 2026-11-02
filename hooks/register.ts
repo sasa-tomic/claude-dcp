@@ -368,11 +368,11 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
         if (!isFilled) throw new Error(`could not put the unsent draft back after the switch (${refusal ?? 'refused by a hook'}); it was: ${draftText}`)
       }
       await then?.(delta)
-      await archiveSession($, dir, from)
+      const jobs = await archiveSession($, dir, from, to)
       transcriptDirs.delete(from)
       const deleted = await pruneArchive($, dir, config.archiveDays)
       await run($, ['rm', '-f', '--', await statusFile($, from)])
-      await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted)`)
+      await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
       await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
       await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
     } catch (err) {

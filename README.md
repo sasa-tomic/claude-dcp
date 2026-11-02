@@ -48,7 +48,7 @@ Then `/plugin`, Installed tab, dcp, Update now, then `/reload-plugins`.
 
 ## Old sessions
 
-Each fork moves the session it replaces into `archive/` of the project folder, where `/resume` does not list it. `/dcp-archive` lists the archived ones, `/dcp-restore <id>` moves one back. Archived sessions older than `archiveDays` are deleted at the next fork.
+Each fork moves the session it replaces into `archive/` of the project folder, where `/resume` does not list it. `/dcp-archive` lists the archived ones, `/dcp-restore <id>` moves one back. Archived sessions older than `archiveDays` are deleted at the next fork. A background job set to resume the replaced session (`~/.claude/jobs/*/state.json`) is pointed at the fork, so its next respawn keeps the history.
 
 ## What a block keeps
 

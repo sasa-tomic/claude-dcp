@@ -25,9 +25,38 @@ async function move($: Dollar, from: string, to: string, id: string) {
   if (await $.fs.exists(`${from}/${id}`)) await run($, ['mv', `${from}/${id}`, `${to}/`])
 }
 
-export async function archiveSession($: Dollar, dir: string, id: string) {
+/** A background job respawns into its state's `resumeSessionId`, which Claude Code moves on /clear but not on /resume:
+    still naming an archived session, the job would come back empty. Points those jobs at `to`; returns their names. */
+async function repointJobs($: Dollar, dir: string, from: string, to: string): Promise<string[]> {
+  const jobs = `${await $.env.get('HOME')}/.claude/jobs`
+  if (!(await $.fs.exists(jobs))) return []
+  const repointed: string[] = []
+  for (const entry of await $.fs.list(jobs)) {
+    const path = `${jobs}/${entry.name}/state.json`
+    if (entry.kind !== 'dir' || !(await $.fs.exists(path))) continue
+    const text = await $.fs.read(path)
+    let state: { resumeSessionId?: string }
+    try {
+      state = JSON.parse(text)
+    } catch (err) {
+      throw new Error(`could not parse background job state ${path}: ${(err as Error).message}`)
+    }
+    if (state.resumeSessionId !== from) continue
+    const updatedAt = new Date(await $.clock.now()).toISOString()
+    await $.fs.write(path, JSON.stringify({ ...state, resumeSessionId: to, linkScanPath: `${dir}/${to}.jsonl`, linkScanOffset: 0, updatedAt }, null, 2))
+    repointed.push(entry.name)
+  }
+
+  return repointed
+}
+
+/** Archives session `from`, replaced by `to`; returns the background jobs now resuming `to`. */
+export async function archiveSession($: Dollar, dir: string, from: string, to: string): Promise<string[]> {
+  const jobs = await repointJobs($, dir, from, to)
   await run($, ['mkdir', '-p', `${dir}/${ARCHIVE}`])
-  await move($, dir, `${dir}/${ARCHIVE}`, id)
+  await move($, dir, `${dir}/${ARCHIVE}`, from)
+
+  return jobs
 }
 
 async function archived($: Dollar, dir: string) {
