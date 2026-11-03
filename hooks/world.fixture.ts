@@ -20,7 +20,7 @@ export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 export const JOBS = `${HOME}/.claude/jobs`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; store?: Record<string, unknown>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean; folder?: string }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -77,11 +77,13 @@ export function world(on: On, w: World) {
     if (e.path === JOBS) return { value: [...texts.keys()].map(p => p.slice(JOBS.length + 1).split('/')).map(([name, inner]) => ({ name: name!, kind: inner ? ('dir' as const) : ('file' as const), size: 0, mtimeMs: 0, isLink: false })) }
     expect(e.path).toBe(PROJECTS)
     const entry = (name: string, kind: 'dir' | 'file') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
-    return { value: [entry('-other', 'dir'), entry('README', 'file'), entry('-work-proj', 'dir')] }
+    return { value: [entry('-other', 'dir'), entry('README', 'file'), entry('-work-proj', 'dir'), ...(w.folder ? [entry(w.folder, 'dir')] : [])] }
   })
   // a folder exists while a file in it does
   const exists = (path: string) => [...files.keys(), ...texts.keys(), ...Object.keys(seen.writes)].some(p => p === path || p.startsWith(`${path}/`))
-  on('fs.exists', (_$, e) => ({ value: w.exists !== false && (e.path === `${PROJECTS}/-work-proj/${session.id}.jsonl` || exists(e.path)) }))
+  // Claude Code moves the transcript to the project folder of a worktree the session enters, and back when it leaves
+  const live = () => `${PROJECTS}/${w.folder ?? '-work-proj'}/${session.id}.jsonl`
+  on('fs.exists', (_$, e) => ({ value: w.exists !== false && (e.path === live() || (e.path !== SRC && exists(e.path))) }))
   on('fs.read', (_$, e) => {
     const text = seen.writes[e.path] ?? texts.get(e.path)
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
@@ -96,7 +98,8 @@ export function world(on: On, w: World) {
     expect(e.argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', path])
     expect(e.cwd).toBe('/') // the session's cwd may be gone
     // the session's own transcript, or a fork of it as written, then what the session wrote into it after the switch
-    const text = path === SRC ? serializeTranscript(w.rows() as any) : seen.writes[path] + serializeTranscript((w.appended ?? []) as any)
+    if (path !== live() && !(path in seen.writes)) return { value: { code: 2, signal: null } }
+    const text = path === live() && session.id === ID ? serializeTranscript(w.rows() as any) : seen.writes[path] + serializeTranscript((w.appended ?? []) as any)
     const middle = Math.floor(text.length / 2) // a piece ends wherever the child's write did, mid-line included
     for (const piece of [text.slice(0, middle), text.slice(middle)]) if (piece !== '') yield { stream: 'stdout' as const, text: piece }
     yield { stream: 'stderr' as const, text: 'boom' }

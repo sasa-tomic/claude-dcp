@@ -80,6 +80,16 @@ describe('finding the transcript', () => {
     expect(context![0]).toContain('CRITICAL: the context is over the maximum limit.')
   })
 
+  test('follows the transcript when Claude Code moves it to another project folder mid-session', async ($, on) => {
+    const w: World = { tokens: 110000, rows: () => conversation().rows }
+    const { seen } = world(on, w)
+    await start($)
+    await $.tool.call({ tool: 'Read', file_path: '/x' })
+    w.folder = '-work-proj--claude-worktrees-wt'
+    expect((await $.classic.Stop({ stop_hook_active: false })).block).toContain('VERY AGGRESSIVE')
+    expect(seen.toasts).toEqual([])
+  })
+
   test('reports loudly when no project folder holds the session transcript', async ($, on) => {
     const { seen } = world(on, { tokens: 110000, rows: () => conversation().rows, exists: false })
     await start($)

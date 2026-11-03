@@ -33,8 +33,8 @@ Start with `~/.claude/dcp.log` (last 200 lines; errors also toast). Then the ses
 | `fork X dropped: a turn started in Y after the fork read it` | A turn (scheduled task, queued prompt) started after the turn that forked ended, so its work would be missing from the fork; the fork file is removed, the session switched back if the resume ran after that turn (`switch back to Y did not happen` if that fails), and the queue waits for that turn's end. |
 | `fork waits: an earlier fork has not switched yet` | A second fork of the session was asked for while the switch to the first was pending; the queue waits for the next turn end. |
 | `switch to X did not happen` | `/resume X` returned but the session id is still the old one; checked right after the call. The fork file still exists. |
-| `no transcript found for session X` | No `~/.claude/projects/*/X.jsonl` exists. The transcript is looked up by session id, never from the cwd, because the cwd follows every `cd` the model runs and the transcript stays in the startup directory's folder. |
-| `could not read the whole transcript` | `grep` exit status or truncation (4 MiB cap); needs a POSIX `grep`. |
+| `no transcript found for session X` | No `~/.claude/projects/*/X.jsonl` exists; lookup: `findTranscript` in `hooks/register.ts`. |
+| `could not read the whole transcript` | `grep` failed on the file found; its exit status and stderr are in the message. Needs a POSIX `grep`. |
 | No status line | No model response yet, so no real token figure (the line appears after the first response, or right after a switch); or a subagent turn. |
 | Tags missing | Subagent turns are untagged by design. Otherwise a hook was skipped: the engine prints a dim transcript line and `claude --debug` has the reason. |
 
@@ -46,7 +46,7 @@ Module map is in `hooks/`: `register.ts` wires events; `compress.ts` plans range
 
 - Test first. Everything runs through the engine: `claude plugin test .`; also `claude plugin validate .` and `npx tsc -p .`. `hooks/rows.fixture.ts` builds transcripts; `world.fixture.ts` answers the engine's ops (`fs.*`, `process.run`, `session.*`, `ui.*`, `command.run`) with `on(...)` hooks that return `{ value }`.
 - Start every child process through `exec`/`run` in `archive.ts` (cwd `/`): a child inherits the session's cwd otherwise, and fails with `ENOENT posix_spawn` once that directory is gone (a removed worktree).
-- Never derive the transcript path from `$.session.cwd()`: it changes with `cd`. A session that moved directories once lost all tagging and nudges silently, because every hook that read the transcript failed and the engine skipped it.
+- Get the transcript path only from `findTranscript` in `hooks/register.ts`, at every read; never derive it from `$.session.cwd()` or keep it.
 - A helper that takes `$` must be a top-level function: the validator rejects a closure that receives `$`.
 - `$.store` is shared by every session on the machine: key per-session values by session id (the compress queue is), and never keep a "pending" marker in it — a stale one from a non-interactive run once made fresh sessions report a switch that never happened.
 - Row layout facts the code relies on (verified on 2.1.303, internal and version-dependent): every tag is a `hook_additional_context` attachment row (`hookName` `prompt.submit` after a prompt's user row, `tool.call` after a `tool_result` row, whose `toolUseID` is the call id plus `-context`); only summary blocks carry their tag as the last line of a user row's text; an assistant message may span several rows sharing `message.id`. Re-verify with a `claude -p` run in a scratch directory before changing them.

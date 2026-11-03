@@ -87,20 +87,14 @@ async function writeStats($: Dollar, id: string, stats: Stats) {
   await $.store.set(`stats2:${id}`, stats)
 }
 
-// A session's transcript lives in the project folder of the directory it started in, while the session's cwd moves with
-// every `cd` the model runs; so the transcript is found by session id, never derived from the cwd.
-const transcriptDirs = new Map<string, string>()
-
 const outputsDir = (path: string) => `${path.slice(0, path.lastIndexOf('/'))}/${OUTPUTS}`
 
+// The session's cwd moves with every `cd` the model runs, and Claude Code moves the transcript between project folders when
+// the session enters or leaves a worktree; so the transcript is looked up by session id at every read, never derived or kept.
 async function findTranscript($: Dollar, id: string): Promise<string | undefined> {
-  const known = transcriptDirs.get(id)
-  if (known) return `${known}/${id}.jsonl`
   const projects = `${await $.env.get('HOME')}/.claude/projects`
   for (const entry of await $.fs.list(projects)) {
-    if (entry.kind !== 'dir' || !(await $.fs.exists(`${projects}/${entry.name}/${id}.jsonl`))) continue
-    transcriptDirs.set(id, `${projects}/${entry.name}`)
-    return `${projects}/${entry.name}/${id}.jsonl`
+    if (entry.kind === 'dir' && (await $.fs.exists(`${projects}/${entry.name}/${id}.jsonl`))) return `${projects}/${entry.name}/${id}.jsonl`
   }
   return undefined
 }
@@ -335,7 +329,6 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
   if (saves.length > 0) await run($, ['mkdir', '-p', outputsDir(path)])
   for (const { path: file, text } of saves) await $.fs.write(file, text)
   await writeTranscript($, `${dir}/${to}.jsonl`, out)
-  transcriptDirs.set(to, dir)
   const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
   const stats = recordFork(await readStats($, from), { before: context.tokens!, estimated: removed, copied: out.length, gone })
   await writeStats($, to, stats)
@@ -344,7 +337,6 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
   await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
   const drop = async () => {
     await run($, ['rm', '-f', '--', `${dir}/${to}.jsonl`])
-    transcriptDirs.delete(to)
     await $.store.delete(`stats2:${to}`)
     await log($, `fork ${to} dropped: a turn started in ${from} after the fork read it; the queue waits for that turn's end`)
   }
@@ -369,7 +361,6 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
       }
       await then?.(delta)
       const jobs = await archiveSession($, dir, from, to)
-      transcriptDirs.delete(from)
       const deleted = await pruneArchive($, dir, config.archiveDays)
       await run($, ['rm', '-f', '--', await statusFile($, from)])
       await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
