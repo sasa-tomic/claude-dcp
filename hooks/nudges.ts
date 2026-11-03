@@ -1,11 +1,10 @@
 import { blockRef } from './ids'
-import { COMPRESSED_BLOCK_HEADER, type Block, type Index, type ToolCall, type Unit, isQueuedCommand, promptText } from './model'
+import { COMPRESSED_BLOCK_HEADER, type Block, type Index, type ToolCall, type Unit, SYNTHETIC_MODEL, isQueuedCommand, promptText } from './model'
 import type { Row } from './rows'
 import type { TurnUsage } from './stats'
 
 const LISTED_BLOCKS = 8
 const LISTED_MESSAGES = 8
-const SYNTHETIC_MODEL = '<synthetic>' // Claude Code's own placeholder answers carry no usage
 
 export const formatTokens = (tokens: number) =>
   tokens >= 1_000_000 ? `${(tokens / 1_000_000).toFixed(1)}M` : tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`

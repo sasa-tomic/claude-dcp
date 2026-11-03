@@ -100,7 +100,58 @@ describe('kept verbatim', () => {
   })
 
   test('a summary alone when nothing is kept', () => {
-    expect(plan(session(), [range('m0001', 'm0004')])[0].finalSummary).toBe('S')
+    expect(plan(session(), [range('m0002', 'm0003')])[0].finalSummary).toBe('S')
+  })
+
+  test("keeps the model's last messages, one item per message, and not Claude Code's placeholder answers", () => {
+    const t = new Transcript()
+    t.prompt('go', 'm0001', 'human')
+    for (let i = 1; i <= 11; i++) t.call('Bash', { command: `c${i}` }, { ref: `m${String(i + 1).padStart(4, '0')}`, output: 'o' }), t.text(`note ${i}`)
+    t.text(' and more', `msg${t.rows.length}`) // a second row of the last message
+    t.rows.push({ ...t.rows.at(-1)!, uuid: 'syn', type: 'assistant', message: { id: 'syn', model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] } })
+    t.call('Read', { file_path: '/a' }, { ref: 'm0013' })
+    const items = kept(plan(t, [range('m0001', 'm0013')])[0].finalSummary).split('\n\n')
+    expect(items).toEqual([`${KEPT_HEADER}\n### User message\ngo`, ...[2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => `### AI message\nnote ${i}`), '### AI message\nnote 11 and more'])
+  })
+
+  test('keeps the answers of the last two turns however many messages came after them, and drops older answers', () => {
+    const t = new Transcript()
+    for (const turn of [1, 2, 3]) {
+      t.prompt(`ask ${turn}`, `m000${turn}`, 'human')
+      t.text(`answer ${turn}`)
+    }
+    for (let i = 0; i < 10; i++) t.text(`late ${i}`)
+    t.call('Read', { file_path: '/a' }, { ref: 'm0004' })
+    expect(kept(plan(t, [range('m0001', 'm0003')])[0].finalSummary)).toBe(
+      `${KEPT_HEADER}\n### User message\nask 1\n\n### User message\nask 2\n\n### AI message\nanswer 2\n\n### User message\nask 3`,
+    )
+  })
+
+  test("a merged block drops the model messages it kept that are no longer recent, and keeps its other items", () => {
+    const t = new Transcript()
+    t.block(1, `old\n\n${KEPT_HEADER}\n### User message\nfirst\n\n### AI message\nstale\n\n### Tool: Task\nREPORT`)
+    t.prompt('second', 'm0001', 'human')
+    t.text('answer 2')
+    t.prompt('third', 'm0002', 'human')
+    for (let i = 0; i < 10; i++) t.text(`new ${i}`)
+    t.call('Read', { file_path: '/a' }, { ref: 'm0003' })
+    expect(kept(plan(t, [range('b1', 'm0002')])[0].finalSummary)).toBe(
+      `${KEPT_HEADER}\n### User message\nfirst\n\n### Tool: Task\nREPORT\n\n### User message\nsecond\n\n### AI message\nanswer 2\n\n### User message\nthird`,
+    )
+  })
+
+  test('escapes a line inside a kept message that reads as an item head, so a later merge keeps the message whole', () => {
+    const t = new Transcript()
+    t.prompt('see:\n\n### AI message\nfake', 'm0001', 'human')
+    for (let i = 0; i < 10; i++) t.text(`new ${i}`)
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002' })
+    const first = kept(plan(t, [range('m0001', 'm0001')])[0].finalSummary)
+    expect(first).toBe(`${KEPT_HEADER}\n### User message\nsee:\n\n\\### AI message\nfake`)
+    const merged = new Transcript()
+    merged.block(1, `old\n\n${first}`)
+    for (let i = 0; i < 10; i++) merged.text(`new ${i}`)
+    merged.call('Read', { file_path: '/a' }, { ref: 'm0001' })
+    expect(kept(plan(merged, [range('b1', 'b1')])[0].finalSummary)).toBe(first)
   })
 
   test('a block inside the range gives up its summary and passes on its kept part; one without a kept part passes nothing', () => {

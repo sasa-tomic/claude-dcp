@@ -1,5 +1,5 @@
 import { parseRef } from './ids'
-import { type Block, type Index, type Unit, blockText, isQueuedCommand, promptText } from './model'
+import { type Block, type Index, SYNTHETIC_MODEL, type Unit, assistantText, blockText, isQueuedCommand, promptText } from './model'
 import { isProtected } from './protected'
 import type { Row } from './rows'
 import { PRUNED_COMPRESS_SUMMARY } from './strategies'
@@ -30,19 +30,42 @@ export class PlanError extends Error {}
 /** Part of the message for an ID that is well-formed but not (yet) tagged in the conversation; the caller may retry it after the next tag lands. */
 export const UNKNOWN_ID = 'is not in the current context'
 
-/** Heads the part of a block carried verbatim into every block that later replaces it: user messages, protected outputs, saved-output paths. */
+/** Heads the part of a block carried verbatim into every block that later replaces it: user messages, recent model messages, protected outputs,
+    saved-output paths. */
 export const KEPT_HEADER = '[Kept verbatim]'
 const KEPT_SPLIT = /^\[Kept verbatim\]$/m
 const LABEL_CHARS = 80
+// what a block keeps of the model's own text: its last messages, and the answers of the last turns, which the user may refer back to
+export const RECENT_AI_MESSAGES = 10
+export const ANSWERED_TURNS = 2
+const USER_HEAD = '### User message'
+const AI_HEAD = '### AI message'
+const ITEM_HEAD = '### (?:User message|AI message|Tool: |Saved output: )'
+// a kept part splits into items at their heads; a line inside an item that reads as a head is escaped, so it cannot split one
+const ITEM_SPLIT = new RegExp(`\\n\\n(?=${ITEM_HEAD})`)
+const HEAD_LINE = new RegExp(`^${ITEM_HEAD}`, 'gm')
 // a background agent's launch notice that blocks made before launches were skipped still carry
-const LAUNCH_ITEM = /### Tool: \S+\nAsync agent launched successfully\.[\s\S]*?(?=\n\n### |$)\s*/g
+const LAUNCH_ITEM = /^### Tool: \S+\nAsync agent launched successfully\./
 const BLOCK_HEAD = /^\s*\[Compressed conversation(?: section)?(?: b\d+)?\]\s*/i
 const BLOCK_TAIL = /\s*<dcp-message-id>b\d+<\/dcp-message-id>\s*$/i
 
 const bullets = (issues: string[]) => (issues.length === 1 ? issues[0] : issues.map(issue => `- ${issue}`).join('\n'))
 const unwrap = (block: Block) => block.summary.replace(BLOCK_HEAD, '').replace(BLOCK_TAIL, '').trim()
-/** What a block carries verbatim: the text after its first KEPT_HEADER line; a block without one carries nothing. */
-const keptOf = (block: Block) => unwrap(block).split(KEPT_SPLIT).slice(1).join(KEPT_HEADER).replace(LAUNCH_ITEM, '').trim()
+const item = (head: string, body: string) => `${head}\n${body.replace(HEAD_LINE, '\\$&')}`
+
+/** One item of what a block keeps or a range may keep, at the row it came from: a user message, a model message, or another kept item. */
+type Kept = { kind: 'user' | 'ai' | 'other'; row: number; text: string }
+const kindOf = (text: string): Kept['kind'] => (text.startsWith(`${USER_HEAD}\n`) ? 'user' : text.startsWith(`${AI_HEAD}\n`) ? 'ai' : 'other')
+
+/** The items a block carries verbatim: those after its first KEPT_HEADER line; a block without one carries none. */
+function keptOf(block: Block): Kept[] {
+  const part = unwrap(block).split(KEPT_SPLIT).slice(1).join(KEPT_HEADER).trim()
+  return part
+    .split(ITEM_SPLIT)
+    .map(text => text.trim())
+    .filter(text => text !== '' && !LAUNCH_ITEM.test(text))
+    .map(text => ({ kind: kindOf(text), row: block.row, text }))
+}
 
 /** The text of a message the user typed: a prompt, or one queued while a turn ran. Hook feedback, task notifications, subagent and plugin prompts are not. */
 export function humanText(row: Row): string | null {
@@ -167,18 +190,51 @@ function savesOf(idx: Index, entry: Entry, index: number, s: number, e: number, 
   })
 }
 
-/** What the range keeps verbatim, in conversation order: kept parts of blocks inside, user messages, protected outputs, saved-output paths. */
-function keptItems(rows: readonly Row[], idx: Index, s: number, e: number, config: CompressConfig, inside: ReadonlyMap<number, Block>, saved: ReturnType<typeof savesOf>): string[] {
-  const items: [number, string][] = [...inside.values()].map(block => [block.row, keptOf(block)])
-  rows.slice(s, e + 1).forEach((row, i) => {
-    const text = humanText(row)
-    if (text !== null) items.push([s + i, `### User message\n${text}`])
+/** Every item a block keeps and every message, in conversation order: the items of each block, what the user typed, and the model's text,
+    one item per assistant message (its text rows share the message id); Claude Code's own placeholder answers are not the model's. */
+function conversation(rows: readonly Row[], idx: Index): Kept[] {
+  const blocks = new Map([...idx.blocks.values()].map(block => [block.row, block]))
+  const items: Kept[] = []
+  const said = new Map<string, Kept>()
+  rows.forEach((row, i) => {
+    const block = blocks.get(i)
+    if (block) return items.push(...keptOf(block))
+    const typed = humanText(row)
+    if (typed !== null) return items.push({ kind: 'user', row: i, text: item(USER_HEAD, typed) })
+    if (row.type !== 'assistant' || row.message?.model === SYNTHETIC_MODEL || assistantText(row).trim() === '') return
+    const prior = said.get(row.message.id)
+    if (prior) prior.text += assistantText(row)
+    else {
+      const message: Kept = { kind: 'ai', row: i, text: assistantText(row) }
+      said.set(row.message.id, message)
+      items.push(message)
+    }
   })
+  for (const message of said.values()) message.text = item(AI_HEAD, message.text.trim())
+
+  return items
+}
+
+/** The model messages a range keeps: the last RECENT_AI_MESSAGES, and the answers of the last ANSWERED_TURNS turns, a turn's answer being its last
+    model message before the user's next message. */
+function recentAi(items: readonly Kept[]): Set<Kept> {
+  const messages = items.filter(k => k.kind !== 'other')
+  const answers = messages.filter((k, i) => k.kind === 'ai' && messages[i + 1]?.kind !== 'ai')
+
+  return new Set([...messages.filter(k => k.kind === 'ai').slice(-RECENT_AI_MESSAGES), ...answers.slice(-ANSWERED_TURNS)])
+}
+
+/** What the range keeps verbatim, in conversation order: kept items of blocks inside, user messages, recent model messages, protected outputs,
+    saved-output paths. A model message a block kept leaves once a range covering that block finds it no longer recent. */
+function keptItems(rows: readonly Row[], idx: Index, s: number, e: number, config: CompressConfig, saved: ReturnType<typeof savesOf>): string[] {
+  const all = conversation(rows, idx)
+  const recent = recentAi(all)
+  const items: [number, string][] = all.filter(k => k.row >= s && k.row <= e && (k.kind !== 'ai' || recent.has(k))).map(k => [k.row, k.text])
   for (const c of idx.calls)
     if (c.useRow >= s && c.useRow <= e && c.resultRow !== undefined && !c.isError && c.resultText && !c.isLaunch && isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns))
-      items.push([c.useRow, `### Tool: ${c.name}\n${c.resultText}`])
+      items.push([c.useRow, item(`### Tool: ${c.name}`, c.resultText)])
   for (const { call, path } of saved) items.push([call.useRow, `### Saved output: ${call.name} ${label(call.input)}\n${path}`])
-  return items.sort((a, b) => a[0] - b[0]).map(([, text]) => text).filter(text => text !== '')
+  return items.sort((a, b) => a[0] - b[0]).map(([, text]) => text)
 }
 
 /** `outputsDir` is where the outputs an entry saves are written. */
@@ -197,7 +253,7 @@ export function planCompression(rows: readonly Row[], idx: Index, args: Compress
     const cited = [...inside.keys()].filter(id => new RegExp(`\\(b${id}\\)`).test(entry.summary))
     if (cited.length > 0) throw new PlanError(`content[${index}].summary cites ${cited.map(id => `(b${id})`).join(', ')}, which this range replaces: write what is still needed of them instead`)
     const saved = savesOf(idx, entry, index, s, e, config, outputsDir)
-    const kept = keptItems(rows, idx, s, e, config, inside, saved)
+    const kept = keptItems(rows, idx, s, e, config, saved)
     const finalSummary = [entry.summary.trim(), ...(kept.length > 0 ? [`${KEPT_HEADER}\n${kept.join('\n\n')}`] : [])].join('\n\n')
     return { index, entry, s, e, messageCount: countMessages(rows, s, e), finalSummary, consumedBlockIds: [...inside.keys()], saves: saved.map(({ call, path }) => ({ path, text: call.resultText })) }
   })

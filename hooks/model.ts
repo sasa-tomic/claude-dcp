@@ -4,6 +4,8 @@ import type { Row } from './rows'
 export const COMPRESSED_BLOCK_HEADER = '[Compressed conversation section]'
 export const COMPRESS_TOOL = 'mcp__dcp__compress'
 const CONTEXT_SUFFIX = '-context'
+/** The model of Claude Code's own placeholder answers ("No response requested."), which carry no usage and were never the model's. */
+export const SYNTHETIC_MODEL = '<synthetic>'
 
 /** Rows `start..end` that one id covers; a tool result's id also names its call. */
 export type Unit = { start: number; end: number; call?: ToolCall }
@@ -36,6 +38,13 @@ export const promptText = (row: Row): string | null => {
   if (!Array.isArray(content) || content.length === 0 || !content.every((b: Row) => b.type === 'text')) return null
   return content.map((b: Row) => b.text).join('')
 }
+
+/** The text blocks of an assistant row, joined. */
+export const assistantText = (row: Row): string =>
+  (Array.isArray(row.message?.content) ? row.message.content : [])
+    .filter((block: Row) => block.type === 'text')
+    .map((block: Row) => block.text)
+    .join('')
 
 export const isQueuedCommand = (row: Row) => row.type === 'attachment' && row.attachment?.type === 'queued_command'
 

@@ -17,7 +17,7 @@ describe('systemPrompt', () => {
 
   test('steers ranges to start and end at tool outputs, leaving prompts and final answers outside', () => {
     const text = systemPrompt(TOOL, [])
-    expect(text).toContain('Blocks keep what the user typed verbatim')
+    expect(text).toContain('Blocks keep verbatim what the user typed, your last 10 text messages and the answers of the last 2 turns.')
     expect(text).toContain('end each range at a tool-output id')
   })
 

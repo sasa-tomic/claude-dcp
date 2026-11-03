@@ -1,4 +1,4 @@
-import { KEPT_HEADER } from './compress'
+import { ANSWERED_TURNS, KEPT_HEADER, RECENT_AI_MESSAGES } from './compress'
 
 export function systemPrompt(tool: string, protectedTools: readonly string[]): string {
   const sections = [
@@ -13,7 +13,7 @@ export function systemPrompt(tool: string, protectedTools: readonly string[]): s
       '- dead ends, failed attempts, superseded file reads and command output: drop these at once, without waiting for the task to close',
     ].join('\n'),
     ['DO NOT COMPRESS:', '- what the next steps need verbatim: files being edited, exact errors, text you will quote', '- work still in progress'].join('\n'),
-    'Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Blocks keep what the user typed verbatim. Never compress the final answer of a turn: end each range at a tool-output id, so the answer after stays in the context.',
+    `Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Blocks keep verbatim what the user typed, your last ${RECENT_AI_MESSAGES} text messages and the answers of the last ${ANSWERED_TURNS} turns. Never compress the final answer of a turn: end each range at a tool-output id, so the answer after stays in the context.`,
     'Before each step ask: is anything above closed enough to become summary-only now? If so, compress it now instead of waiting for a limit. Prefer one call with several ranges, largest first.',
   ]
   if (protectedTools.length > 0)
@@ -24,7 +24,7 @@ export function systemPrompt(tool: string, protectedTools: readonly string[]): s
 export function toolDescription(tool: string): string {
   return `Replace spans of the conversation with summaries. A range runs from startId to endId inclusive; its messages and tool outputs leave the context.
 
-Summary: it must let you continue with the range gone. Keep paths, signatures, decisions with their reasons, constraints, findings and open items. Drop failed attempts, bulky output and back-and-forth. Do not repeat user messages: the environment keeps them verbatim.
+Summary: it must let you continue with the range gone. Keep paths, signatures, decisions with their reasons, constraints, findings and open items. Drop failed attempts, bulky output and back-and-forth. Do not repeat user messages or your recent text messages: the environment keeps them verbatim.
 
 Boundaries: startId and endId are IDs visible in context, mNNNN for a message and bN for an earlier compressed block (shown under a "[Compressed conversation section]" header). startId must not come after endId. Ranges in one call must not overlap; pass independent ranges as separate entries of one ${tool} call. A range inside one an earlier call queued is skipped; a range covering queued ones replaces them.
 
