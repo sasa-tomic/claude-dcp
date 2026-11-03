@@ -1,7 +1,7 @@
 import type { AgentStatus, Hook, Register } from 'claude-code'
 
 import { applyCompression, staleCopies } from './apply'
-import { CHILD_CWD, OUTPUTS, archiveSession, exec, listArchive, pruneArchive, restoreSession, run } from './archive'
+import { CHILD_CWD, OUTPUTS, archiveSession, exec, homeDir, listArchive, pruneArchive, restoreSession, run, tool } from './archive'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine, trailingRef } from './ids'
 import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
@@ -56,8 +56,8 @@ const INPUT_SCHEMA = {
 }
 
 async function log($: Dollar, line: string) {
-  const home = await $.env.get('HOME')
-  const lines = ((await $.store.get('log')) as string[] | undefined) ?? []
+  const home = await homeDir($)
+  const lines =((await $.store.get('log')) as string[] | undefined) ?? []
   lines.push(`${new Date(await $.clock.now()).toISOString()} ${line}`)
   const kept = lines.slice(-LOG_LINES)
   await $.store.set('log', kept)
@@ -96,7 +96,7 @@ const outputsDir = (path: string) => `${path.slice(0, path.lastIndexOf('/'))}/${
 async function findTranscript($: Dollar, id: string): Promise<string | undefined> {
   const known = transcriptDirs.get(id)
   if (known) return `${known}/${id}.jsonl`
-  const projects = `${await $.env.get('HOME')}/.claude/projects`
+  const projects = `${await homeDir($)}/.claude/projects`
   for (const entry of await $.fs.list(projects)) {
     if (entry.kind !== 'dir' || !(await $.fs.exists(`${projects}/${entry.name}/${id}.jsonl`))) continue
     transcriptDirs.set(id, `${projects}/${entry.name}`)
@@ -108,7 +108,7 @@ async function findTranscript($: Dollar, id: string): Promise<string | undefined
 // The per-request API logs are a third of a transcript and grow quadratically. A transcript of several MiB exceeds what
 // `$.fs.read` and `$.process.run` copy (4 MiB), so it is streamed through `grep` and `dd` instead.
 async function readTranscript($: Dollar, path: string): Promise<Row[]> {
-  const child = $.process.spawn({ argv: ['grep', '-v', '-e', '^{"type":"api-request', path], cwd: CHILD_CWD })
+  const child = $.process.spawn({ argv: [await tool($, 'grep'), '-v', '-e', '^{"type":"api-request', path], cwd: CHILD_CWD })
   let [stdout, stderr] = ['', '']
   for (let step = await child.next(); ; step = await child.next()) {
     if (step.done) {
@@ -427,7 +427,7 @@ async function noteCall($: Dollar, tool: string, input: Record<string, any>) {
   if (noted !== stats) await writeStats($, id, noted)
 }
 
-const statusFile = async ($: Dollar, id: string) => `${await $.env.get('HOME')}/.claude/dcp-status-${id}`
+const statusFile = async ($: Dollar, id: string) => `${await homeDir($)}/.claude/dcp-status-${id}`
 
 /** Pins the text under the prompt and writes it where the user's statusLine command can read it. */
 async function pin($: Dollar, text: string) {

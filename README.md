@@ -22,6 +22,8 @@ None of these numbers measure this plugin. The studies test retrieval benchmarks
 
 Needs Claude Code 2.1.287 or later (mods). The `prompt.compose` hook does not run in a plugin that a person installs where an organization manages Claude Code.
 
+**Windows:** dcp starts `grep`, `dd`, `mv`, `mkdir`, `rm` and `find` itself. It looks for them in Git for Windows (`usr\bin` under Program Files), so Git for Windows must be installed; it does not need to be on the PATH. Windows has no `HOME`; dcp falls back to `USERPROFILE`.
+
 ## Configure
 
 Every option is optional; the defaults suit most sessions. Review and change them with `/plugin configure dcp@claude-dcp`.
