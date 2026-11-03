@@ -1,3 +1,4 @@
+import { gitToolPath, homeOf } from './platform'
 import type { Dollar } from './register'
 
 const ARCHIVE = 'archive'
@@ -10,8 +11,28 @@ const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
     as a removed worktree is; every path passed to a child is absolute. */
 export const CHILD_CWD = '/'
 
-export function exec($: Dollar, argv: string[], init: { stdin?: string; timeoutMs?: number } = {}) {
-  return $.process.run(argv, { ...init, cwd: CHILD_CWD })
+export async function homeDir($: Dollar): Promise<string> {
+  return homeOf({ HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') })
+}
+
+const tools = new Map<string, string>()
+
+/** The program to start for a Linux tool such as `grep`: its name, except on Windows, where it is the one Git for Windows ships,
+    by absolute path, because its usr\bin is rarely on the PATH. */
+export async function tool($: Dollar, name: string): Promise<string> {
+  if ((await $.env.get('OS')) !== 'Windows_NT') return name
+  let path = tools.get(name)
+  if (!path) {
+    const local = await $.env.get('LOCALAPPDATA')
+    const roots = [await $.env.get('ProgramFiles'), await $.env.get('ProgramW6432'), await $.env.get('ProgramFiles(x86)'), local && `${local}\\Programs`]
+    path = (await gitToolPath(name, roots, (p) => $.fs.exists(p))) ?? name
+    tools.set(name, path)
+  }
+  return path
+}
+
+export async function exec($: Dollar, argv: string[], init: { stdin?: string; timeoutMs?: number } = {}) {
+  return $.process.run([await tool($, argv[0]), ...argv.slice(1)], { ...init, cwd: CHILD_CWD })
 }
 
 export async function run($: Dollar, argv: string[]) {
@@ -28,7 +49,7 @@ async function move($: Dollar, from: string, to: string, id: string) {
 /** A background job respawns into its state's `resumeSessionId`, which Claude Code moves on /clear but not on /resume:
     still naming an archived session, the job would come back empty. Points those jobs at `to`; returns their names. */
 async function repointJobs($: Dollar, dir: string, from: string, to: string): Promise<string[]> {
-  const jobs = `${await $.env.get('HOME')}/.claude/jobs`
+  const jobs = `${await homeDir($)}/.claude/jobs`
   if (!(await $.fs.exists(jobs))) return []
   const repointed: string[] = []
   for (const entry of await $.fs.list(jobs)) {
@@ -68,7 +89,7 @@ async function archived($: Dollar, dir: string) {
 export async function pruneArchive($: Dollar, dir: string, days: number): Promise<number> {
   const cutoff = (await $.clock.now()) - days * DAY_MS
   const old = (await archived($, dir)).filter(s => s.mtimeMs < cutoff)
-  for (const { id } of old) await run($, ['rm', '-rf', '--', `${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`, `${await $.env.get('HOME')}/.claude/dcp-status-${id}`])
+  for (const { id } of old) await run($, ['rm', '-rf', '--', `${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`, `${await homeDir($)}/.claude/dcp-status-${id}`])
   if (await $.fs.exists(`${dir}/${OUTPUTS}`)) await run($, ['find', `${dir}/${OUTPUTS}`, '-type', 'f', '-mmin', `+${days * 24 * 60}`, '-delete'])
 
   return old.length
