@@ -38,6 +38,8 @@ const LABEL_CHARS = 80
 // what a block keeps of the model's own text: its last messages, and the answers of the last turns, which the user may refer back to
 export const RECENT_AI_MESSAGES = 10
 export const ANSWERED_TURNS = 2
+// the model's one-word reply after a compress call: no content, so never kept
+export const COMPRESS_REPLY = 'Compressed'
 const USER_HEAD = '### User message'
 const AI_HEAD = '### AI message'
 const ITEM_HEAD = '### (?:User message|AI message|Tool: |Saved output: )'
@@ -50,21 +52,24 @@ const BLOCK_HEAD = /^\s*\[Compressed conversation(?: section)?(?: b\d+)?\]\s*/i
 const BLOCK_TAIL = /\s*<dcp-message-id>b\d+<\/dcp-message-id>\s*$/i
 
 const bullets = (issues: string[]) => (issues.length === 1 ? issues[0] : issues.map(issue => `- ${issue}`).join('\n'))
-const unwrap = (block: Block) => block.summary.replace(BLOCK_HEAD, '').replace(BLOCK_TAIL, '').trim()
+const unwrap = (summary: string) => summary.replace(BLOCK_HEAD, '').replace(BLOCK_TAIL, '').trim()
 const item = (head: string, body: string) => `${head}\n${body.replace(HEAD_LINE, '\\$&')}`
+const ESCAPED_HEAD_LINE = new RegExp(`^\\\\(?=${ITEM_HEAD})`, 'gm')
+/** A kept item's text as it was said: without its head, its escaped head lines restored. */
+export const itemBody = (k: Kept) => k.text.slice(k.text.indexOf('\n') + 1).replace(ESCAPED_HEAD_LINE, '')
 
 /** One item of what a block keeps or a range may keep, at the row it came from: a user message, a model message, or another kept item. */
-type Kept = { kind: 'user' | 'ai' | 'other'; row: number; text: string }
+export type Kept = { kind: 'user' | 'ai' | 'other'; row: number; text: string }
 const kindOf = (text: string): Kept['kind'] => (text.startsWith(`${USER_HEAD}\n`) ? 'user' : text.startsWith(`${AI_HEAD}\n`) ? 'ai' : 'other')
 
-/** The items a block carries verbatim: those after its first KEPT_HEADER line; a block without one carries none. */
-function keptOf(block: Block): Kept[] {
-  const part = unwrap(block).split(KEPT_SPLIT).slice(1).join(KEPT_HEADER).trim()
+/** The items a block's summary carries verbatim, at the block's row: those after its first KEPT_HEADER line; a block without one carries none. */
+export function keptOf(summary: string, row: number): Kept[] {
+  const part = unwrap(summary).split(KEPT_SPLIT).slice(1).join(KEPT_HEADER).trim()
   return part
     .split(ITEM_SPLIT)
     .map(text => text.trim())
     .filter(text => text !== '' && !LAUNCH_ITEM.test(text))
-    .map(text => ({ kind: kindOf(text), row: block.row, text }))
+    .map(text => ({ kind: kindOf(text), row, text }))
 }
 
 /** The text of a message the user typed: a prompt, or one queued while a turn ran. Hook feedback, task notifications, subagent and plugin prompts are not. */
@@ -191,14 +196,15 @@ function savesOf(idx: Index, entry: Entry, index: number, s: number, e: number, 
 }
 
 /** Every item a block keeps and every message, in conversation order: the items of each block, what the user typed, and the model's text,
-    one item per assistant message (its text rows share the message id); Claude Code's own placeholder answers are not the model's. */
+    one item per assistant message (its text rows share the message id); Claude Code's own placeholder answers are not the model's, and
+    COMPRESS_REPLY says nothing. */
 function conversation(rows: readonly Row[], idx: Index): Kept[] {
   const blocks = new Map([...idx.blocks.values()].map(block => [block.row, block]))
   const items: Kept[] = []
   const said = new Map<string, Kept>()
   rows.forEach((row, i) => {
     const block = blocks.get(i)
-    if (block) return items.push(...keptOf(block))
+    if (block) return items.push(...keptOf(block.summary, block.row))
     const typed = humanText(row)
     if (typed !== null) return items.push({ kind: 'user', row: i, text: item(USER_HEAD, typed) })
     if (row.type !== 'assistant' || row.message?.model === SYNTHETIC_MODEL || assistantText(row).trim() === '') return
@@ -211,8 +217,9 @@ function conversation(rows: readonly Row[], idx: Index): Kept[] {
     }
   })
   for (const message of said.values()) message.text = item(AI_HEAD, message.text.trim())
+  const reply = item(AI_HEAD, COMPRESS_REPLY)
 
-  return items
+  return items.filter(k => k.text !== reply)
 }
 
 /** The model messages a range keeps: the last RECENT_AI_MESSAGES, and the answers of the last ANSWERED_TURNS turns, a turn's answer being its last

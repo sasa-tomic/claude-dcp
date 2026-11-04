@@ -1,4 +1,4 @@
-import { ANSWERED_TURNS, KEPT_HEADER, RECENT_AI_MESSAGES } from './compress'
+import { ANSWERED_TURNS, COMPRESS_REPLY, KEPT_HEADER, RECENT_AI_MESSAGES } from './compress'
 
 export function systemPrompt(tool: string, protectedTools: readonly string[]): string {
   const sections = [
@@ -71,7 +71,7 @@ export function queuedResult(messages: number, notes: readonly string[]): string
 export const continuePrompt = (removed: string) => reminder([`Compressions applied (${removed}). Continue the task.`], '')
 
 /** The reply after a compress call: one non-empty word, so the turn's answer ends in text the fork check finds and nothing is printed twice. */
-export const AFTER_CALL = 'Write no text before the call; after it, answer with the single word Compressed.'
+export const AFTER_CALL = `Write no text before the call; after it, answer with the single word ${COMPRESS_REPLY}.`
 
 /** What /dcp-prune asks: the largest closed chunks, summarised densely, whatever the context size. */
 /** The /dcp-prune focus over the max limit when none is given. */

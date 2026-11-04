@@ -1039,7 +1039,18 @@ describe('ui.render UserMessage', () => {
     world(on, { rows: () => [] })
     await start($)
     const tree = await render($, `[Compressed conversation section]\n${'x'.repeat(4000)}\n\n<dcp-message-id>b7</dcp-message-id>`)
-    expect(tree).toMatchObject({ type: 'Text', props: { dimColor: true }, children: ['b7 · compressed conversation section · 4.1k chars (ctrl+o to expand)'] })
+    expect(tree).toMatchObject({ type: 'Box', props: { flexDirection: 'column', gap: 1 }, children: [{ type: 'Text', props: { dimColor: true }, children: ['b7 · compressed conversation section · 4.1k chars (ctrl+o to expand)'] }] })
+  })
+
+  test('draws the messages a folded block keeps under its line as they were said, and not the tool outputs it keeps', async ($, on) => {
+    world(on, { rows: () => [] })
+    await start($)
+    const kept = '[Kept verbatim]\n### User message\nask\n\n### Tool: Task\nREPORT\n\n### AI message\nanswer\n\\### Tool: quoted'
+    const tree = await render($, `[Compressed conversation section]\nS\n\n${kept}\n\n<dcp-message-id>b7</dcp-message-id>`)
+    expect(tree.children.slice(1)).toMatchObject([
+      { type: 'Text', props: { dimColor: true }, children: ['> ask'] },
+      { type: 'Text', props: {}, children: ['answer\n### Tool: quoted'] },
+    ])
   })
 
   test('draws a block in full when expanded, and other messages as they are', async ($, on) => {

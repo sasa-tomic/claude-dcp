@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { type CompressConfig, type Entry, KEPT_HEADER, mergeQueue, planCompression } from './compress'
+import { COMPRESS_REPLY, type CompressConfig, type Entry, KEPT_HEADER, mergeQueue, planCompression } from './compress'
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
 import { PRUNED_COMPRESS_SUMMARY } from './strategies'
@@ -112,6 +112,16 @@ describe('kept verbatim', () => {
     t.call('Read', { file_path: '/a' }, { ref: 'm0013' })
     const items = kept(plan(t, [range('m0001', 'm0013')])[0].finalSummary).split('\n\n')
     expect(items).toEqual([`${KEPT_HEADER}\n### User message\ngo`, ...[2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => `### AI message\nnote ${i}`), '### AI message\nnote 11 and more'])
+  })
+
+  test("does not keep the one-word reply after a compress call, nor count it among the model's last messages", () => {
+    const t = new Transcript()
+    t.prompt('go', 'm0001', 'human')
+    for (let i = 1; i <= 10; i++) t.call('Bash', { command: `c${i}` }, { ref: `m${String(i + 1).padStart(4, '0')}`, output: 'o' }), t.text(`note ${i}`)
+    t.text(COMPRESS_REPLY)
+    t.call('Read', { file_path: '/a' }, { ref: 'm0012' })
+    const items = kept(plan(t, [range('m0001', 'm0012')])[0].finalSummary).split('\n\n')
+    expect(items).toEqual([`${KEPT_HEADER}\n### User message\ngo`, ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => `### AI message\nnote ${i}`)])
   })
 
   test('keeps the answers of the last two turns however many messages came after them, and drops older answers', () => {

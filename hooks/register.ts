@@ -1,8 +1,8 @@
-import type { AgentStatus, Hook, Register } from 'claude-code'
+import type { AgentStatus, Hook, Register, RenderElement } from 'claude-code'
 
 import { applyCompression, staleCopies } from './apply'
 import { CHILD_CWD, OUTPUTS, archiveSession, exec, listArchive, pruneArchive, restoreSession, run } from './archive'
-import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, mergeQueue, planCompression } from './compress'
+import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, itemBody, keptOf, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine, trailingRef } from './ids'
 import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
 import { continuePrompt, iterationNudge, limitNudge, MERGE_HINT, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
@@ -578,11 +578,16 @@ export const register: Register = (on, options) => {
   })
 
   // A block is stored as a user row, so the terminal would draw its whole summary as a message: fold it to one line, all of it on ctrl+o.
+  // The messages it keeps stay drawn under that line, user messages dim as typed input, so the conversation reads on across the fold.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const ref = e.props.text.startsWith(COMPRESSED_BLOCK_HEADER) ? trailingRef(e.props.text) : null
     if (e.props.isExpanded || ref === null) return next(e)
+    const line = `${ref} · compressed conversation section · ${formatTokens(e.props.text.length)} chars (ctrl+o to expand)`
+    const said = keptOf(e.props.text, 0)
+      .filter(k => k.kind !== 'other')
+      .map((k): RenderElement => (k.kind === 'user' ? { type: 'Text', props: { dimColor: true }, children: [`> ${itemBody(k)}`] } : { type: 'Text', props: {}, children: [itemBody(k)] }))
 
-    return { type: 'Text', props: { dimColor: true }, children: [`${ref} · compressed conversation section · ${formatTokens(e.props.text.length)} chars (ctrl+o to expand)`] }
+    return { type: 'Box', props: { flexDirection: 'column', gap: 1 }, children: [{ type: 'Text', props: { dimColor: true }, children: [line] }, ...said] }
   })
 
   on('classic.Stop', async ($, e, next) => {
