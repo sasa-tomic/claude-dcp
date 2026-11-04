@@ -21,7 +21,7 @@ describe('archiving after a fork', () => {
       ['mkdir', '-p', ARCHIVE],
       ['mv', SRC, `${ARCHIVE}/`],
       ['rm', '-rf', '--', `${ARCHIVE}/${OLDER}.jsonl`, `${ARCHIVE}/${OLDER}`, `${HOME}/.claude/dcp-status-${OLDER}`],
-      ['rm', '-f', '--', STATUS],
+      ['rm', '-rf', '--', STATUS],
     ])
     expect(files.has(SRC)).toBe(false)
     expect(files.has(`${ARCHIVE}/${ID}.jsonl`)).toBe(true)

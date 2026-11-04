@@ -26,7 +26,7 @@ export function world(on: On, w: World) {
   const clock = mock.clock(on)
   mock.store(on, w.store)
   mock.env(on, { HOME, ...w.env })
-  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], commands: [] as string[] }
+  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], scripts: [] as string[], commands: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
   if (w.saved) files.set(`${PROJECT}/dcp-outputs/toolu_x.txt`, { size: 1, ageDays: 0 })
@@ -94,9 +94,10 @@ export function world(on: On, w: World) {
     return { value: undefined }
   })
   on('process.spawn', async function* (_$, e) {
-    const path = e.argv.at(-1)!
-    expect(e.argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', path])
-    expect(e.cwd).toBe('/') // the session's cwd may be gone
+    const argv = unixOf(e.argv, e.env, w, seen)
+    const path = argv.at(-1)!
+    expect(argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', path])
+    expect(e.cwd).toMatch(/\.claude$/) // the session's cwd may be gone
     // the session's own transcript, or a fork of it as written, then what the session wrote into it after the switch
     if (path !== live() && !(path in seen.writes)) return { value: { code: 2, signal: null } }
     const text = path === live() && session.id === ID ? serializeTranscript(w.rows() as any) : seen.writes[path] + serializeTranscript((w.appended ?? []) as any)
@@ -106,14 +107,14 @@ export function world(on: On, w: World) {
     return { value: { code: w.readExit ?? 0, signal: null } }
   })
   on('process.run', (_$, e) => {
-    const [cmd, ...args] = e.argv
-    expect(e.init?.cwd).toBe('/') // the session's cwd may be gone
+    const [cmd, ...args] = unixOf(e.argv, e.init?.env, w, seen)
+    expect(e.init?.cwd).toMatch(/\.claude$/) // the session's cwd may be gone
     const result = (exitCode: number, stdout = '', stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     if (cmd === 'dd') {
       seen.writes[args[0]!.replace('of=', '')] = e.init!.stdin!
       return result(w.writeExit ?? 0, '', 'full')
     }
-    seen.shell.push([...e.argv])
+    seen.shell.push([cmd!, ...args])
     if (cmd === w.failing) return result(1, '', 'denied')
     if (cmd === 'grep') {
       const title = files.get(args.at(-1)!)?.title
@@ -153,6 +154,29 @@ export function world(on: On, w: World) {
     return {}
   })
   return { clock, seen, files }
+}
+
+/** A Windows child as the Unix one doing the same, its script kept in `seen.scripts`; a Unix child as it is. Each must be of its world's platform. */
+function unixOf(argv: readonly string[], env: Record<string, string> | undefined, w: World, seen: { scripts: string[] }): string[] {
+  const exe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+  expect(argv[0] === exe).toBe(w.env?.OS === 'Windows_NT')
+  if (argv[0] !== exe) return [...argv]
+  expect(argv.slice(0, -1)).toEqual([exe, '-NoProfile', '-NonInteractive', '-EncodedCommand'])
+  const script = String.fromCharCode(...new Uint16Array(Uint8Array.from(atob(argv.at(-1)!), c => c.charCodeAt(0)).buffer))
+  seen.scripts.push(script)
+  const e = env!
+  const verbs: [string, () => string[]][] = [
+    ['CreateDirectory', () => ['mkdir', '-p', e.DCP_PATH!]],
+    ['Move(', () => ['mv', e.DCP_FROM!, `${e.DCP_TO}/`]],
+    ['$env:DCP_PATHS', () => ['rm', '-rf', '--', ...e.DCP_PATHS!.split('\n')]],
+    ['Get-ChildItem', () => ['find', e.DCP_PATH!, '-type', 'f', '-mmin', `+${e.DCP_MINUTES}`, '-delete']],
+    ['Select-String', () => ['grep', '-o', '-E', e.DCP_PATTERN!, e.DCP_PATH!]],
+    ['ReadLines', () => ['grep', '-v', '-e', `^${e.DCP_SKIP}`, e.DCP_PATH!]],
+    ['OpenStandardInput', () => ['dd', `of=${e.DCP_PATH}`, 'status=none']],
+  ]
+  const verb = verbs.find(([word]) => script.includes(word))
+  if (!verb) throw new Error(`no Unix twin for the PowerShell script: ${script}`)
+  return verb[1]()
 }
 
 export function conversation() {

@@ -90,6 +90,27 @@ describe('finding the transcript', () => {
     expect(seen.toasts).toEqual([])
   })
 
+  test('looks in USERPROFILE on Windows, as Claude Code does, not in HOME', async ($, on) => {
+    world(on, { tokens: 110000, rows: () => conversation().rows, env: { OS: 'Windows_NT', USERPROFILE: HOME, HOME: '/c/Users/u', SystemRoot: 'C:\\Windows' } })
+    await start($)
+    const { context } = await $.tool.call({ tool: 'Read', file_path: '/x' })
+    expect(context![0]).toContain('CRITICAL: the context is over the maximum limit.')
+  })
+
+  test('looks in CLAUDE_CONFIG_DIR when it is set, as Claude Code does', async ($, on) => {
+    world(on, { tokens: 110000, rows: () => conversation().rows, env: { CLAUDE_CONFIG_DIR: `${HOME}/.claude`, HOME: '/elsewhere' } })
+    await start($)
+    const { context } = await $.tool.call({ tool: 'Read', file_path: '/x' })
+    expect(context![0]).toContain('CRITICAL: the context is over the maximum limit.')
+  })
+
+  test('reports loudly when the home folder variable is unset', async ($, on) => {
+    const { seen } = world(on, { tokens: 110000, rows: () => conversation().rows, env: { OS: 'Windows_NT' } })
+    await start($)
+    await $.tool.call({ tool: 'Read', file_path: '/x' })
+    expect(seen.toasts[0]).toBe('dcp: cannot find the home folder: USERPROFILE is unset')
+  })
+
   test('reports loudly when no project folder holds the session transcript', async ($, on) => {
     const { seen } = world(on, { tokens: 110000, rows: () => conversation().rows, exists: false })
     await start($)
@@ -378,7 +399,7 @@ describe('mid-turn apply', () => {
     await $.turn.start({ text: 'a scheduled task', turnId: 'turn-2' }) // its work would be missing from the fork
     await clock.advance(1000)
     expect(seen.resumes).toEqual([])
-    expect(seen.shell).toContainEqual(['rm', '-f', '--', first])
+    expect(seen.shell).toContainEqual(['rm', '-rf', '--', first])
     expect(seen.writes[LOG]).toContain(`fork ${first!.split('/').pop()!.replace('.jsonl', '')} dropped: a turn started in ${ID} after the fork read it`)
     await complete($)
     await clock.advance(1000)
@@ -538,7 +559,7 @@ describe('turn.complete', () => {
     expect(session.id).not.toBe(ID)
     expect(seen.writes[`${HOME}/.claude/dcp-status-${session.id}`]).toBe(seen.statuses.at(-1))
     expect(seen.writes[LOG]).toMatch(/~2\.\dk removed \(estimated; measured at the next reply\), cache rewrite ~\d+/)
-    expect(seen.shell).toContainEqual(['rm', '-f', '--', STATUS])
+    expect(seen.shell).toContainEqual(['rm', '-rf', '--', STATUS])
   })
 
 

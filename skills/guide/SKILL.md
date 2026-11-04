@@ -34,7 +34,7 @@ Start with `~/.claude/dcp.log` (last 200 lines; errors also toast). Then the ses
 | `fork waits: an earlier fork has not switched yet` | A second fork of the session was asked for while the switch to the first was pending; the queue waits for the next turn end. |
 | `switch to X did not happen` | `/resume X` returned but the session id is still the old one; checked right after the call. The fork file still exists. |
 | `no transcript found for session X` | No `~/.claude/projects/*/X.jsonl` exists; lookup: `findTranscript` in `hooks/register.ts`. |
-| `could not read the whole transcript` | `grep` failed on the file found; its exit status and stderr are in the message. Needs a POSIX `grep`. |
+| `could not read the whole transcript` | The outside command that reads it (`readTranscript` in `hooks/platform.ts`: `grep`, or `powershell.exe` on Windows) failed on the file found; its exit status and stderr are in the message. |
 | No status line | No model response yet, so no real token figure (the line appears after the first response, or right after a switch); or a subagent turn. |
 | Tags missing | Subagent turns are untagged by design. Otherwise a hook was skipped: the engine prints a dim transcript line and `claude --debug` has the reason. |
 

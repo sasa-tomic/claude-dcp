@@ -1,4 +1,5 @@
 import type { Dollar } from './register'
+import { claudeDir, commands, exec, run } from './platform'
 
 const ARCHIVE = 'archive'
 /** Where compress calls save tool outputs: beside the transcripts, outside any session folder, so no fork or archive moves them. */
@@ -6,29 +7,17 @@ export const OUTPUTS = 'dcp-outputs'
 const DAY_MS = 86_400_000
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
-/** Where every child starts. A child inherits the session's cwd otherwise, and cannot start (ENOENT) once that directory is gone,
-    as a removed worktree is; every path passed to a child is absolute. */
-export const CHILD_CWD = '/'
-
-export function exec($: Dollar, argv: string[], init: { stdin?: string; timeoutMs?: number } = {}) {
-  return $.process.run(argv, { ...init, cwd: CHILD_CWD })
-}
-
-export async function run($: Dollar, argv: string[]) {
-  const { exitCode, stderr } = await exec($, argv)
-  if (exitCode !== 0) throw new Error(`${argv.join(' ')} failed: exit ${exitCode}, ${stderr}`)
-}
-
 /** Moves a session's transcript and its folder (subagents, tool results) between a project folder and its archive. */
 async function move($: Dollar, from: string, to: string, id: string) {
-  await run($, ['mv', `${from}/${id}.jsonl`, `${to}/`])
-  if (await $.fs.exists(`${from}/${id}`)) await run($, ['mv', `${from}/${id}`, `${to}/`])
+  const { move } = await commands($)
+  await run($, move(`${from}/${id}.jsonl`, to))
+  if (await $.fs.exists(`${from}/${id}`)) await run($, move(`${from}/${id}`, to))
 }
 
 /** A background job respawns into its state's `resumeSessionId`, which Claude Code moves on /clear but not on /resume:
     still naming an archived session, the job would come back empty. Points those jobs at `to`; returns their names. */
 async function repointJobs($: Dollar, dir: string, from: string, to: string): Promise<string[]> {
-  const jobs = `${await $.env.get('HOME')}/.claude/jobs`
+  const jobs = `${await claudeDir($)}/jobs`
   if (!(await $.fs.exists(jobs))) return []
   const repointed: string[] = []
   for (const entry of await $.fs.list(jobs)) {
@@ -53,7 +42,7 @@ async function repointJobs($: Dollar, dir: string, from: string, to: string): Pr
 /** Archives session `from`, replaced by `to`; returns the background jobs now resuming `to`. */
 export async function archiveSession($: Dollar, dir: string, from: string, to: string): Promise<string[]> {
   const jobs = await repointJobs($, dir, from, to)
-  await run($, ['mkdir', '-p', `${dir}/${ARCHIVE}`])
+  await run($, (await commands($)).mkdir(`${dir}/${ARCHIVE}`))
   await move($, dir, `${dir}/${ARCHIVE}`, from)
 
   return jobs
@@ -68,14 +57,15 @@ async function archived($: Dollar, dir: string) {
 export async function pruneArchive($: Dollar, dir: string, days: number): Promise<number> {
   const cutoff = (await $.clock.now()) - days * DAY_MS
   const old = (await archived($, dir)).filter(s => s.mtimeMs < cutoff)
-  for (const { id } of old) await run($, ['rm', '-rf', '--', `${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`, `${await $.env.get('HOME')}/.claude/dcp-status-${id}`])
-  if (await $.fs.exists(`${dir}/${OUTPUTS}`)) await run($, ['find', `${dir}/${OUTPUTS}`, '-type', 'f', '-mmin', `+${days * 24 * 60}`, '-delete'])
+  const { remove, removeOlder } = await commands($)
+  for (const { id } of old) await run($, remove([`${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`, `${await claudeDir($)}/dcp-status-${id}`]))
+  if (await $.fs.exists(`${dir}/${OUTPUTS}`)) await run($, removeOlder(`${dir}/${OUTPUTS}`, days * 24 * 60))
 
   return old.length
 }
 
 async function titleOf($: Dollar, path: string): Promise<string> {
-  const { exitCode, stdout, stderr } = await exec($, ['grep', '-o', '-E', '"aiTitle":"[^"]*"', path])
+  const { exitCode, stdout, stderr } = await exec($, (await commands($)).titles(path))
   if (exitCode === 1) return 'untitled'
   if (exitCode !== 0) throw new Error(`could not read the title of ${path}: exit ${exitCode}, ${stderr}`)
 

@@ -1,7 +1,8 @@
 import type { AgentStatus, Hook, Register, RenderElement } from 'claude-code'
 
 import { applyCompression, staleCopies } from './apply'
-import { CHILD_CWD, OUTPUTS, archiveSession, exec, listArchive, pruneArchive, restoreSession, run } from './archive'
+import { OUTPUTS, archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
+import { claudeDir, commands, exec, run } from './platform'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, itemBody, keptOf, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine, trailingRef } from './ids'
 import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
@@ -56,18 +57,17 @@ const INPUT_SCHEMA = {
 }
 
 async function log($: Dollar, line: string) {
-  const home = await $.env.get('HOME')
   const lines = ((await $.store.get('log')) as string[] | undefined) ?? []
   lines.push(`${new Date(await $.clock.now()).toISOString()} ${line}`)
   const kept = lines.slice(-LOG_LINES)
   await $.store.set('log', kept)
-  await $.fs.write(`${home}/.claude/dcp.log`, kept.join('\n') + '\n')
+  await $.fs.write(`${await claudeDir($)}/dcp.log`, kept.join('\n') + '\n')
 }
 
 async function report($: Dollar, err: unknown) {
   const message = `dcp: ${err instanceof Error ? err.message : String(err)}`
-  await log($, `ERROR ${message}`)
   await $.ui.toast(message)
+  await log($, `ERROR ${message}`)
 }
 
 // $.store is shared by every session on the machine, so per-session values are keyed by session id.
@@ -92,7 +92,7 @@ const outputsDir = (path: string) => `${path.slice(0, path.lastIndexOf('/'))}/${
 // The session's cwd moves with every `cd` the model runs, and Claude Code moves the transcript between project folders when
 // the session enters or leaves a worktree; so the transcript is looked up by session id at every read, never derived or kept.
 async function findTranscript($: Dollar, id: string): Promise<string | undefined> {
-  const projects = `${await $.env.get('HOME')}/.claude/projects`
+  const projects = `${await claudeDir($)}/projects`
   for (const entry of await $.fs.list(projects)) {
     if (entry.kind === 'dir' && (await $.fs.exists(`${projects}/${entry.name}/${id}.jsonl`))) return `${projects}/${entry.name}/${id}.jsonl`
   }
@@ -100,9 +100,10 @@ async function findTranscript($: Dollar, id: string): Promise<string | undefined
 }
 
 // The per-request API logs are a third of a transcript and grow quadratically. A transcript of several MiB exceeds what
-// `$.fs.read` and `$.process.run` copy (4 MiB), so it is streamed through `grep` and `dd` instead.
+// `$.fs.read` and `$.process.run` copy (4 MiB), so it is streamed through an outside command instead.
 async function readTranscript($: Dollar, path: string): Promise<Row[]> {
-  const child = $.process.spawn({ argv: ['grep', '-v', '-e', '^{"type":"api-request', path], cwd: CHILD_CWD })
+  const { argv, env } = (await commands($)).readTranscript(path)
+  const child = $.process.spawn({ argv, env, cwd: await claudeDir($) })
   let [stdout, stderr] = ['', '']
   for (let step = await child.next(); ; step = await child.next()) {
     if (step.done) {
@@ -115,7 +116,7 @@ async function readTranscript($: Dollar, path: string): Promise<Row[]> {
 }
 
 async function writeTranscript($: Dollar, path: string, rows: readonly Row[]) {
-  const { exitCode, stderr } = await exec($, ['dd', `of=${path}`, 'status=none'], { stdin: serializeTranscript(rows), timeoutMs: 120_000 })
+  const { exitCode, stderr } = await exec($, (await commands($)).writeTranscript(path), { stdin: serializeTranscript(rows), timeoutMs: 120_000 })
   if (exitCode !== 0) throw new Error(`could not write the transcript ${path}: exit ${exitCode}, ${stderr}`)
 }
 
@@ -326,7 +327,7 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
   const { context } = await $.session.usage()
   const dir = path.slice(0, path.lastIndexOf('/'))
   const saves = plans.flatMap(p => p.saves)
-  if (saves.length > 0) await run($, ['mkdir', '-p', outputsDir(path)])
+  if (saves.length > 0) await run($, (await commands($)).mkdir(outputsDir(path)))
   for (const { path: file, text } of saves) await $.fs.write(file, text)
   await writeTranscript($, `${dir}/${to}.jsonl`, out)
   const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
@@ -336,7 +337,7 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
   const pending = `${delta} (estimated; measured at the next reply)`
   await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
   const drop = async () => {
-    await run($, ['rm', '-f', '--', `${dir}/${to}.jsonl`])
+    await run($, (await commands($)).remove([`${dir}/${to}.jsonl`]))
     await $.store.delete(`stats2:${to}`)
     await log($, `fork ${to} dropped: a turn started in ${from} after the fork read it; the queue waits for that turn's end`)
   }
@@ -362,7 +363,7 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
       await then?.(delta)
       const jobs = await archiveSession($, dir, from, to)
       const deleted = await pruneArchive($, dir, config.archiveDays)
-      await run($, ['rm', '-f', '--', await statusFile($, from)])
+      await run($, (await commands($)).remove([await statusFile($, from)]))
       await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
       await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
       await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
@@ -418,7 +419,7 @@ async function noteCall($: Dollar, tool: string, input: Record<string, any>) {
   if (noted !== stats) await writeStats($, id, noted)
 }
 
-const statusFile = async ($: Dollar, id: string) => `${await $.env.get('HOME')}/.claude/dcp-status-${id}`
+const statusFile = async ($: Dollar, id: string) => `${await claudeDir($)}/dcp-status-${id}`
 
 /** Pins the text under the prompt and writes it where the user's statusLine command can read it. */
 async function pin($: Dollar, text: string) {
