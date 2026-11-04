@@ -530,7 +530,7 @@ export const register: Register = (on, options) => {
         throw err
       }
     } else result = await next(e)
-    if (result.deny !== undefined) return result
+    if (result.deny !== undefined || next.signal.aborted) return result
     state.ran.push(e.tool_use_id)
     state.toolsThisTurn++
     state.sinceNudge++
@@ -593,7 +593,7 @@ export const register: Register = (on, options) => {
 
   on('classic.Stop', async ($, e, next) => {
     const result = await next(e)
-    if (!state.active || e.stop_hook_active) return result
+    if (!state.active || e.stop_hook_active || next.signal.aborted) return result
     const block = await reported($, () => stopReason($, config, state))
     state.ending = block !== undefined
 
@@ -623,7 +623,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const turns = state.turns // before any await, so a turn that starts meanwhile is seen as newer than the fork
     const result = await next(e)
-    if (!state.active || e.agentId !== undefined) return result
+    if (!state.active || e.agentId !== undefined || next.signal.aborted) return result
     await reported($, () => recordTurnStats($, e.usage))
     await showStatus($)
     if (state.stopped) {

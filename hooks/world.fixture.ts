@@ -26,7 +26,7 @@ export function world(on: On, w: World) {
   const clock = mock.clock(on)
   mock.store(on, w.store)
   mock.env(on, { HOME, ...w.env })
-  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], scripts: [] as string[], commands: [] as string[] }
+  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], scripts: [] as string[], commands: [] as string[], reads: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
   if (w.saved) files.set(`${PROJECT}/dcp-outputs/toolu_x.txt`, { size: 1, ageDays: 0 })
@@ -96,6 +96,7 @@ export function world(on: On, w: World) {
   on('process.spawn', async function* (_$, e) {
     const argv = unixOf(e.argv, e.env, w, seen)
     const path = argv.at(-1)!
+    seen.reads.push(path)
     expect(argv).toEqual(['grep', '-v', '-e', '^{"type":"api-request', path])
     expect(e.cwd).toMatch(/\.claude$/) // the session's cwd may be gone
     // the session's own transcript, or a fork of it as written, then what the session wrote into it after the switch

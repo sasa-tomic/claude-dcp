@@ -189,6 +189,18 @@ describe('tool.call tagging and nudges', () => {
     expect(contexts[1][0]).toMatch(/^<dcp-message-id>/)
   })
 
+  // a hook above dcp's that settles first abandons the call, as an interrupt at the permission prompt does
+  const settlesFirst = { name: 'above', tier: 'prepend' as const, register(on: On) { on('tool.call', (_$, e, next) => { void next(e).catch(() => undefined); return { result: 'above', text: 'above' } }) } }
+  // the engine kills what a hook starts for an abandoned call, so reading the transcript then fails (`$.process.spawn(grep) aborted`)
+  test('an abandoned call reads no transcript: over the max limit, its nudge is not computed', { plugins: [settlesFirst] }, async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 110000, rows: () => conversation().rows })
+    await start($)
+    const before = seen.reads.length
+    await $.tool.call({ tool: 'Read', file_path: '/x' })
+    await clock.settle() // dcp's hook runs on after the call settled above it
+    expect(seen.reads.length).toBe(before)
+  })
+
   test('sends no nudge while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
     world(on, { tokens: 110000, rows: () => conversation().rows, store: { 'stats2:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) } })
     await start($)
@@ -504,6 +516,15 @@ describe('turn.complete', () => {
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
     return w
   }
+
+  const settlesFirst = { name: 'above', tier: 'prepend' as const, register(on: On) { on('turn.complete', (_$, e, next) => { void next(e).catch(() => undefined); return { text: e.answer } }) } }
+  test('an abandoned turn end does not fork: the queue waits for the next turn end', { plugins: [settlesFirst] }, async ($, on) => {
+    const { clock, seen } = await queued($, on)
+    await complete($)
+    await clock.settle() // dcp's hook runs on after the turn end settled above it
+    expect(clones(seen)).toEqual([])
+    expect(seen.resumes).toEqual([])
+  })
 
   test('forks the transcript with the range replaced by its summary, strategies applied, and resumes it', async ($, on) => {
     const t = conversation()
@@ -1015,6 +1036,15 @@ describe('classic.Stop', () => {
   test('lets the stop through before any response gave a real token figure', async ($, on) => {
     await toolTurn($, on, undefined)
     expect((await stop($)).block).toBeUndefined()
+  })
+
+  const settlesFirst = { name: 'above', tier: 'prepend' as const, register(on: On) { on('classic.Stop', (_$, e, next) => { void next(e).catch(() => undefined); return {} }) } }
+  test('an abandoned stop reads no transcript: over the max limit, it is not held back', { plugins: [settlesFirst] }, async ($, on) => {
+    const { clock, seen } = await toolTurn($, on, 110000)
+    const before = seen.reads.length
+    await stop($)
+    await clock.settle() // dcp's hook runs on after the stop settled above it
+    expect(seen.reads.length).toBe(before)
   })
 
   test('reports a failure to read the transcript, and the stop goes through', async ($, on) => {
