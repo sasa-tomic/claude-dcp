@@ -64,7 +64,7 @@ export function cronCarry(rows: readonly Row[], idx: Index, removed: ReadonlySet
 
 export type ApplyContext = { sessionId: string; newUuid: () => string }
 
-/** Replaces each planned range with one summary user row and drops superseded attachments, relinking the parentUuid chain; rows are never mutated.
+/** Replaces each planned range with one summary user row and drops superseded attachments, relinking the parentUuid chain and leafUuid checkpoints; rows are never mutated.
     When it removes cron calls, one cron carry note replaces the earlier ones. Throws when the result would not index: a fork that
     breaks the transcript fails here, with the session untouched, instead of failing every hook of the fork it switched to. */
 export function applyCompression(rows: readonly Row[], idx: Index, plans: readonly Plan[], ctx: ApplyContext): Row[] {
@@ -114,6 +114,7 @@ function compressRows(rows: readonly Row[], idx: Index, plans: readonly Plan[], 
     if (summary) out.push({ ...summary, parentUuid: resolve(summary.parentUuid) })
     if (removed.has(i)) return
     const copy: Row = { ...row, parentUuid: resolve(row.parentUuid ?? null) }
+    if (typeof copy.leafUuid === 'string') copy.leafUuid = resolve(copy.leafUuid) // a resume checkpoint; null withdraws one, so it stays
     for (const key of ['sessionId', 'session_id']) if (key in copy) copy[key] = ctx.sessionId
     out.push(copy)
   })

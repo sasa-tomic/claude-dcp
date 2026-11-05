@@ -57,13 +57,16 @@ describe('applyCompression', () => {
     )
   })
 
-  test('relinks parentUuid across the removed rows', () => {
+  test('relinks parentUuid and the resume checkpoints\' leafUuid across the removed rows', () => {
     const t = session()
+    const checkpoint = (leafUuid: string | null) => ({ type: 'last-prompt', lastPrompt: 'p', leafUuid, sessionId: 's1' })
+    t.rows.splice(8, 0, checkpoint('u7'), checkpoint('u1'), checkpoint(null))
     const out = applyCompression(t.rows, indexRows(t.rows), [plan(2, 6, 'S')], ctx)
     const summary = summaryOf(out)
     expect(summary.parentUuid).toBe('u2')
     expect(out[3].parentUuid).toBe(summary.uuid) // the kept queue-operation pointed at the removed tag row
-    expect(out[4].parentUuid).toBe(summary.uuid) // 'after' pointed at the removed tag row too
+    expect(out.slice(4, 7).map(r => r.leafUuid)).toEqual([summary.uuid, 'u1', null]) // a withdrawn checkpoint stays withdrawn
+    expect(out[7].parentUuid).toBe(summary.uuid) // 'after' pointed at the removed tag row too
     const uuids = new Set(out.map(r => r.uuid))
     expect(out.every(r => r.parentUuid === null || uuids.has(r.parentUuid))).toBe(true)
   })
