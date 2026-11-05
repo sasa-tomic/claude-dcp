@@ -50,6 +50,13 @@ describe('applyCompression', () => {
     expect(out.every(r => r.sessionId === 'NEW')).toBe(true)
   })
 
+  test('refuses a result that leaves a tag naming a call it removed, so no broken fork is written', () => {
+    const t = session()
+    expect(() => applyCompression(t.rows, indexRows(t.rows), [plan(2, 5, 'S')], ctx)).toThrow(
+      'the compressed transcript would not index: message id m0003 at row 3 names no tool call',
+    )
+  })
+
   test('relinks parentUuid across the removed rows', () => {
     const t = session()
     const out = applyCompression(t.rows, indexRows(t.rows), [plan(2, 6, 'S')], ctx)

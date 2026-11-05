@@ -1,6 +1,6 @@
 import type { Plan } from './compress'
 import { tagLine } from './ids'
-import { COMPRESSED_BLOCK_HEADER, type Index, isQueuedCommand, tagOf } from './model'
+import { COMPRESSED_BLOCK_HEADER, type Index, indexRows, isQueuedCommand, tagOf } from './model'
 import type { Row } from './rows'
 
 const SUMMARY_ROW_FIELDS = ['isSidechain', 'userType', 'entrypoint', 'cwd', 'version', 'gitBranch', 'timestamp'] as const
@@ -65,8 +65,19 @@ export function cronCarry(rows: readonly Row[], idx: Index, removed: ReadonlySet
 export type ApplyContext = { sessionId: string; newUuid: () => string }
 
 /** Replaces each planned range with one summary user row and drops superseded attachments, relinking the parentUuid chain; rows are never mutated.
-    When it removes cron calls, one cron carry note replaces the earlier ones. */
+    When it removes cron calls, one cron carry note replaces the earlier ones. Throws when the result would not index: a fork that
+    breaks the transcript fails here, with the session untouched, instead of failing every hook of the fork it switched to. */
 export function applyCompression(rows: readonly Row[], idx: Index, plans: readonly Plan[], ctx: ApplyContext): Row[] {
+  const out = compressRows(rows, idx, plans, ctx)
+  try {
+    indexRows(out)
+  } catch (err) {
+    throw new Error(`the compressed transcript would not index: ${(err as Error).message}`)
+  }
+  return out
+}
+
+function compressRows(rows: readonly Row[], idx: Index, plans: readonly Plan[], ctx: ApplyContext): Row[] {
   const ordered = [...plans].sort((a, b) => a.s - b.s)
   const redirect = new Map<string, string | null>()
   const summaryAt = new Map<number, Row>()
