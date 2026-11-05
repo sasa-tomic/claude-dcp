@@ -31,8 +31,9 @@ export type Index = {
   maxBlockId: number
 }
 
+/** The text of a prompt row; a companion row Claude Code adds to a tool result (an image's size, a skill's body) is not one. */
 export const promptText = (row: Row): string | null => {
-  if (row.type !== 'user') return null
+  if (row.type !== 'user' || row.turnCompanion === true) return null
   const content = row.message?.content
   if (typeof content === 'string') return content
   if (!Array.isArray(content) || content.length === 0 || !content.every((b: Row) => b.type === 'text')) return null

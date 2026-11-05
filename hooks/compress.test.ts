@@ -65,6 +65,18 @@ describe('range resolution', () => {
     const [p] = plan(t, [range('m0002', 'm0002')])
     expect([p.s, p.e]).toEqual([2, 6])
   })
+
+  test('widens the range over the companion row Claude Code writes between an image result and its id tag, and does not count that row as a message', () => {
+    const t = new Transcript()
+    t.prompt('go', 'm0001') // 0-1
+    t.rows.push({ ...t.rows[0], uuid: 'ua', type: 'assistant', message: { id: 'A', role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'Read', input: {} }, { type: 'tool_use', id: 'c2', name: 'Read', input: {} }] } }) // 2
+    const tag = (id: string, ref: string) => ({ ...t.rows[0], uuid: `t${id}`, type: 'attachment', attachment: { type: 'hook_additional_context', content: [`<dcp-message-id>${ref}</dcp-message-id>`], hookName: 'tool.call', toolUseID: `${id}-context` } })
+    const result = (id: string) => ({ ...t.rows[0], uuid: `r${id}`, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } })
+    const companion = (id: string) => ({ ...t.rows[0], uuid: `k${id}`, type: 'user', isMeta: true, turnCompanion: true, message: { role: 'user', content: '[Image: original 20x10]' } })
+    t.rows.push(result('c1'), companion('c1'), tag('c1', 'm0002'), result('c2'), companion('c2'), tag('c2', 'm0003')) // 3-8
+    const [p] = plan(t, [range('m0002', 'm0002')])
+    expect([p.s, p.e, p.messageCount]).toEqual([2, 8, 1])
+  })
 })
 
 describe('kept verbatim', () => {

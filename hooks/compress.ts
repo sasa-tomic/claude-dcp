@@ -118,12 +118,10 @@ function messageSpan(rows: readonly Row[], i: number): [number, number] {
 
 /** Grows `s..e` until it holds whole assistant messages and, for every tool call touching it, the call, its result and the result's id tag. */
 function closeRange(rows: readonly Row[], idx: Index, s: number, e: number): [number, number] {
+  const tagRow = new Map([...idx.units.values()].flatMap(u => (u.call ? [[u.call, u.end] as const] : [])))
   const calls = idx.calls
     .filter(c => c.resultRow !== undefined)
-    .map(c => {
-      const tagged = rows[c.resultRow! + 1]?.attachment?.toolUseID === `${c.id}-context`
-      return { first: messageSpan(rows, c.useRow)[0], uses: c.useRow, result: c.resultRow!, last: c.resultRow! + (tagged ? 1 : 0) }
-    })
+    .map(c => ({ first: messageSpan(rows, c.useRow)[0], uses: c.useRow, result: c.resultRow!, last: tagRow.get(c) ?? c.resultRow! }))
   for (;;) {
     let [lo, hi] = [messageSpan(rows, s)[0], messageSpan(rows, e)[1]]
     for (const c of calls) {
