@@ -24,7 +24,12 @@ export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
-  mock.store(on, w.store)
+  // the plugin's store, in memory, for tests to read what it holds
+  const store = new Map(Object.entries(w.store ?? {}))
+  on('store.get', (_$, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_$, e) => ({ value: void store.set(e.key, JSON.parse(JSON.stringify(e.value))) }))
+  on('store.delete', (_$, e) => ({ value: void store.delete(e.key) }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
   mock.env(on, { HOME, ...w.env })
   const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], scripts: [] as string[], commands: [] as string[], reads: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
@@ -75,6 +80,8 @@ export function world(on: On, w: World) {
       return { value: [...files].filter(([p]) => p.startsWith(`${ARCHIVE}/`)).map(([p, f]) => ({ name: p.slice(ARCHIVE.length + 1), kind: 'file' as const, size: f.size, mtimeMs: now - f.ageDays * DAY, isLink: false })) }
     }
     if (e.path === JOBS) return { value: [...texts.keys()].map(p => p.slice(JOBS.length + 1).split('/')).map(([name, inner]) => ({ name: name!, kind: inner ? ('dir' as const) : ('file' as const), size: 0, mtimeMs: 0, isLink: false })) }
+    // a project folder: the files in it that fs.exists finds
+    if (e.path.startsWith(`${PROJECTS}/`)) return { value: [...new Set([...files.keys(), ...Object.keys(seen.writes), live()])].filter(p => p.slice(0, p.lastIndexOf('/')) === e.path && isFile(p)).map(p => ({ name: p.slice(e.path.length + 1), kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })) }
     expect(e.path).toBe(PROJECTS)
     const entry = (name: string, kind: 'dir' | 'file') => ({ name, kind, size: 0, mtimeMs: 0, isLink: false })
     return { value: [entry('-other', 'dir'), entry('README', 'file'), entry('-work-proj', 'dir'), ...(w.folder ? [entry(w.folder, 'dir')] : [])] }
@@ -83,7 +90,8 @@ export function world(on: On, w: World) {
   const exists = (path: string) => [...files.keys(), ...texts.keys(), ...Object.keys(seen.writes)].some(p => p === path || p.startsWith(`${path}/`))
   // Claude Code moves the transcript to the project folder of a worktree the session enters, and back when it leaves
   const live = () => `${PROJECTS}/${w.folder ?? '-work-proj'}/${session.id}.jsonl`
-  on('fs.exists', (_$, e) => ({ value: w.exists !== false && (e.path === live() || (e.path !== SRC && exists(e.path))) }))
+  const isFile = (path: string) => w.exists !== false && (path === live() || (path !== SRC && exists(path)))
+  on('fs.exists', (_$, e) => ({ value: isFile(e.path) }))
   on('fs.read', (_$, e) => {
     const text = seen.writes[e.path] ?? texts.get(e.path)
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
@@ -154,7 +162,7 @@ export function world(on: On, w: World) {
     if (session.switchOnResume) session.id = e.args
     return {}
   })
-  return { clock, seen, files }
+  return { clock, seen, files, store }
 }
 
 /** A Windows child as the Unix one doing the same, its script kept in `seen.scripts`; a Unix child as it is. Each must be of its world's platform. */

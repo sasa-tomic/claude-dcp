@@ -87,6 +87,22 @@ async function writeStats($: Dollar, id: string, stats: Stats) {
   await $.store.set(`stats2:${id}`, stats)
 }
 
+const SESSION_KEY = /^(?:stats2|queue2):(.+)$/
+
+/** Deletes the store keys of a session whose transcript is no longer in a project folder, and keys of no current kind: the
+    store is shared by every session and capped (4 MiB of JSON), so a full one refuses every write, the compress queue's too. */
+async function sweepStore($: Dollar) {
+  const projects = `${await claudeDir($)}/projects`
+  const live = new Set<string>()
+  for (const dir of await $.fs.list(projects)) {
+    if (dir.kind !== 'dir') continue
+    for (const file of await $.fs.list(`${projects}/${dir.name}`)) if (file.kind === 'file' && file.name.endsWith('.jsonl')) live.add(file.name.slice(0, -6))
+  }
+  const stale = (await $.store.keys()).filter(key => key !== 'log' && !live.has(SESSION_KEY.exec(key)?.[1] ?? ''))
+  for (const key of stale) await $.store.delete(key)
+  if (stale.length > 0) await log($, `deleted ${stale.length} store key(s) of sessions without a transcript or of an earlier format`)
+}
+
 const outputsDir = (path: string) => `${path.slice(0, path.lastIndexOf('/'))}/${OUTPUTS}`
 
 // The session's cwd moves with every `cd` the model runs, and Claude Code moves the transcript between project folders when
@@ -355,7 +371,8 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
         if (back !== from) throw new Error(`switch back to ${from} did not happen; session is ${back}, a fork that lacks the latest turn`)
         return await drop()
       }
-      await writeQueue($, from, [])
+      await $.store.delete(`queue2:${from}`)
+      await $.store.delete(`stats2:${from}`)
       if (draftText.length > 0) {
         const { isFilled, refusal } = await $.prompt.fill({ text: draftText })
         if (!isFilled) throw new Error(`could not put the unsent draft back after the switch (${refusal ?? 'refused by a hook'}); it was: ${draftText}`)
@@ -481,6 +498,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
   state.active = isInteractive || (await $.env.get('DCP_HEADLESS')) === '1'
   if (!state.active) return
   resetTurn(state)
+  await sweepStore($)
   await $.command.register({ name: 'dcp-archive', description: 'List sessions dcp archived after compressing' })
   await $.command.register({ name: 'dcp-restore', description: 'Restore an archived session for /resume', argumentHint: '<session id>' })
   await $.command.register({ name: 'dcp-prune', description: 'Ask the model to compress closed work now', argumentHint: '[hint]' })

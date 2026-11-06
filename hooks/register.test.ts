@@ -72,6 +72,26 @@ describe('session.start', () => {
   })
 })
 
+describe('the store', () => {
+  test('at session start keeps the keys of sessions with a transcript and the log, and deletes the rest', async ($, on) => {
+    const kept = { 'log': ['l'], 'stats2:old-id': emptyStats(), 'queue2:old-id': [] }
+    const { seen, store } = world(on, { rows: () => conversation().rows, store: { ...kept, 'stats2:gone-id': emptyStats(), 'queue2:gone-id': [], 'stats:old-id': {}, 'queue': [] } })
+    await start($)
+    expect([...store.keys()]).toEqual(Object.keys(kept))
+    expect(seen.writes[LOG]).toContain('deleted 4 store key(s) of sessions without a transcript or of an earlier format')
+  })
+
+  test('a fork that switched deletes the keys of the session it replaced and keeps the fork stats', async ($, on) => {
+    const { clock, seen, store } = world(on, { tokens: 100, rows: () => conversation().rows, session: { id: ID, switchOnResume: true } })
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+    await complete($)
+    await clock.advance(1000)
+    const to = seen.resumes[0]!.replace('resume ', '')
+    expect([...store.keys()].sort()).toEqual(['log', `stats2:${to}`])
+  })
+})
+
 describe('finding the transcript', () => {
   test('finds it by session id in whichever project folder holds it, not by the current directory', async ($, on) => {
     world(on, { tokens: 110000, rows: () => conversation().rows })
