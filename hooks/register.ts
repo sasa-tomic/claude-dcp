@@ -1,7 +1,7 @@
 import type { AgentStatus, Hook, Register, RenderElement } from 'claude-code'
 
 import { applyCompression, staleCopies } from './apply'
-import { OUTPUTS, archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
+import { ARCHIVE, OUTPUTS, archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
 import { claudeDir, commands, exec, run } from './platform'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, itemBody, keptOf, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine, trailingRef } from './ids'
@@ -57,11 +57,10 @@ const INPUT_SCHEMA = {
 }
 
 async function log($: Dollar, line: string) {
-  const lines = ((await $.store.get('log')) as string[] | undefined) ?? []
+  const path = `${await claudeDir($)}/dcp.log`
+  const lines = (await $.fs.exists(path)) ? (await $.fs.read(path)).split('\n').slice(0, -1) : []
   lines.push(`${new Date(await $.clock.now()).toISOString()} ${line}`)
-  const kept = lines.slice(-LOG_LINES)
-  await $.store.set('log', kept)
-  await $.fs.write(`${await claudeDir($)}/dcp.log`, kept.join('\n') + '\n')
+  await $.fs.write(path, lines.slice(-LOG_LINES).join('\n') + '\n')
 }
 
 async function report($: Dollar, err: unknown) {
@@ -70,37 +69,52 @@ async function report($: Dollar, err: unknown) {
   await log($, `ERROR ${message}`)
 }
 
-// $.store is shared by every session on the machine, so per-session values are keyed by session id.
-async function readQueue($: Dollar, id: string): Promise<Queued[]> {
-  return ((await $.store.get(`queue2:${id}`)) as Queued[] | undefined) ?? []
+/** A session's queue and stats, each in its own file named by session id: the plugin store is one capped (4 MiB) value shared
+    by every session, where one full session would refuse every other's writes. */
+const sessionFile = async ($: Dollar, id: string, kind: 'queue' | 'stats') => `${await claudeDir($)}/dcp/${id}.${kind}.json`
+
+async function readSession<T>($: Dollar, id: string, kind: 'queue' | 'stats', empty: () => T): Promise<T> {
+  const path = await sessionFile($, id, kind)
+  if (!(await $.fs.exists(path))) return empty()
+  const text = await $.fs.read(path)
+  try {
+    return JSON.parse(text) as T
+  } catch (err) {
+    throw new Error(`could not parse ${path}: ${(err as Error).message}`)
+  }
 }
 
-async function writeQueue($: Dollar, id: string, queue: Queued[]) {
-  await $.store.set(`queue2:${id}`, queue)
-}
+const writeSession = async ($: Dollar, id: string, kind: 'queue' | 'stats', value: unknown) => $.fs.write(await sessionFile($, id, kind), JSON.stringify(value))
+const readQueue = ($: Dollar, id: string) => readSession<Queued[]>($, id, 'queue', () => [])
+const writeQueue = ($: Dollar, id: string, queue: Queued[]) => writeSession($, id, 'queue', queue)
+const readStats = ($: Dollar, id: string) => readSession<Stats>($, id, 'stats', emptyStats)
+const writeStats = ($: Dollar, id: string, stats: Stats) => writeSession($, id, 'stats', stats)
+const SESSION_FILE = /^(?:dcp-status-(.+)|(.+)\.(?:queue|stats)\.json)$/
 
-async function readStats($: Dollar, id: string): Promise<Stats> {
-  return ((await $.store.get(`stats2:${id}`)) as Stats | undefined) ?? emptyStats()
-}
-
-async function writeStats($: Dollar, id: string, stats: Stats) {
-  await $.store.set(`stats2:${id}`, stats)
-}
-
-const SESSION_KEY = /^(?:stats2|queue2):(.+)$/
-
-/** Deletes the store keys of a session whose transcript is no longer in a project folder, and keys of no current kind: the
-    store is shared by every session and capped (4 MiB of JSON), so a full one refuses every write, the compress queue's too. */
-async function sweepStore($: Dollar) {
-  const projects = `${await claudeDir($)}/projects`
-  const live = new Set<string>()
+/** Deletes the session files and status files of sessions without a transcript, live or archived: Claude Code deletes old
+    transcripts, and pruneArchive deletes archived ones. */
+async function sweepSessions($: Dollar) {
+  const home = await claudeDir($)
+  const projects = `${home}/projects`
+  const known = new Set<string>()
+  const addTranscripts = async (dir: string) => {
+    for (const file of await $.fs.list(dir)) if (file.kind === 'file' && file.name.endsWith('.jsonl')) known.add(file.name.slice(0, -6))
+  }
   for (const dir of await $.fs.list(projects)) {
     if (dir.kind !== 'dir') continue
-    for (const file of await $.fs.list(`${projects}/${dir.name}`)) if (file.kind === 'file' && file.name.endsWith('.jsonl')) live.add(file.name.slice(0, -6))
+    await addTranscripts(`${projects}/${dir.name}`)
+    if (await $.fs.exists(`${projects}/${dir.name}/${ARCHIVE}`)) await addTranscripts(`${projects}/${dir.name}/${ARCHIVE}`)
   }
-  const stale = (await $.store.keys()).filter(key => key !== 'log' && !live.has(SESSION_KEY.exec(key)?.[1] ?? ''))
-  for (const key of stale) await $.store.delete(key)
-  if (stale.length > 0) await log($, `deleted ${stale.length} store key(s) of sessions without a transcript or of an earlier format`)
+  const gone = (dir: string, names: string[]) =>
+    names.flatMap(name => {
+      const match = SESSION_FILE.exec(name)
+      return match && !known.has(match[1] ?? match[2]!) ? [`${dir}/${name}`] : []
+    })
+  const fileNames = async (dir: string) => (await $.fs.list(dir)).filter(e => e.kind === 'file').map(e => e.name)
+  const stale = [...gone(home, (await fileNames(home)).filter(name => name.startsWith('dcp-status-'))), ...((await $.fs.exists(`${home}/dcp`)) ? gone(`${home}/dcp`, await fileNames(`${home}/dcp`)) : [])]
+  if (stale.length === 0) return
+  await run($, (await commands($)).remove(stale))
+  await log($, `deleted ${stale.length} file(s) of sessions without a transcript`)
 }
 
 const outputsDir = (path: string) => `${path.slice(0, path.lastIndexOf('/'))}/${OUTPUTS}`
@@ -353,8 +367,7 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
   const pending = `${delta} (estimated; measured at the next reply)`
   await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
   const drop = async () => {
-    await run($, (await commands($)).remove([`${dir}/${to}.jsonl`]))
-    await $.store.delete(`stats2:${to}`)
+    await run($, (await commands($)).remove([`${dir}/${to}.jsonl`, await sessionFile($, to, 'stats')]))
     await log($, `fork ${to} dropped: a turn started in ${from} after the fork read it; the queue waits for that turn's end`)
   }
   state.forking = true
@@ -371,8 +384,6 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
         if (back !== from) throw new Error(`switch back to ${from} did not happen; session is ${back}, a fork that lacks the latest turn`)
         return await drop()
       }
-      await $.store.delete(`queue2:${from}`)
-      await $.store.delete(`stats2:${from}`)
       if (draftText.length > 0) {
         const { isFilled, refusal } = await $.prompt.fill({ text: draftText })
         if (!isFilled) throw new Error(`could not put the unsent draft back after the switch (${refusal ?? 'refused by a hook'}); it was: ${draftText}`)
@@ -380,7 +391,7 @@ async function forkQueued($: Dollar, config: Config, state: State, turns: number
       await then?.(delta)
       const jobs = await archiveSession($, dir, from, to)
       const deleted = await pruneArchive($, dir, config.archiveDays)
-      await run($, (await commands($)).remove([await statusFile($, from)]))
+      await run($, (await commands($)).remove([await statusFile($, from), await sessionFile($, from, 'queue')]))
       await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
       await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
       await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
@@ -498,7 +509,6 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
   state.active = isInteractive || (await $.env.get('DCP_HEADLESS')) === '1'
   if (!state.active) return
   resetTurn(state)
-  await sweepStore($)
   await $.command.register({ name: 'dcp-archive', description: 'List sessions dcp archived after compressing' })
   await $.command.register({ name: 'dcp-restore', description: 'Restore an archived session for /resume', argumentHint: '<session id>' })
   await $.command.register({ name: 'dcp-prune', description: 'Ask the model to compress closed work now', argumentHint: '[hint]' })
@@ -509,6 +519,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
     inputSchema: INPUT_SCHEMA,
     isDeferred: false,
   })
+  await reported($, () => sweepSessions($))
 }
 
 export const register: Register = (on, options) => {

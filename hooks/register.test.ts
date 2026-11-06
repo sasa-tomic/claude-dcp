@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { COMPRESS_CALL, CWD, HOME, ID, LOG, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, start, step, submit, world } from './world.fixture'
+import { COMPRESS_CALL, CWD, HOME, ID, LOG, OLD, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, sessionFile, start, step, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
 import { AFTER_CALL, MERGE_HINT } from './prompts'
@@ -72,23 +72,43 @@ describe('session.start', () => {
   })
 })
 
-describe('the store', () => {
-  test('at session start keeps the keys of sessions with a transcript and the log, and deletes the rest', async ($, on) => {
-    const kept = { 'log': ['l'], 'stats2:old-id': emptyStats(), 'queue2:old-id': [] }
-    const { seen, store } = world(on, { rows: () => conversation().rows, store: { ...kept, 'stats2:gone-id': emptyStats(), 'queue2:gone-id': [], 'stats:old-id': {}, 'queue': [] } })
+describe('the session files', () => {
+  test('at session start deletes the files of sessions with no transcript, live or archived, and keeps the rest', async ($, on) => {
+    const kept = [sessionFile(ID, 'stats'), sessionFile(OLD, 'queue'), `${HOME}/.claude/dcp-status-${OLD}`]
+    const gone = [sessionFile('gone-id', 'stats'), sessionFile('gone-id', 'queue'), `${HOME}/.claude/dcp-status-gone-id`]
+    const { seen } = world(on, { rows: () => conversation().rows, archived: { [OLD]: { ageDays: 1 } }, texts: Object.fromEntries([...kept, ...gone, `${HOME}/.claude/settings.json`].map(p => [p, '[]'])) })
     await start($)
-    expect([...store.keys()]).toEqual(Object.keys(kept))
-    expect(seen.writes[LOG]).toContain('deleted 4 store key(s) of sessions without a transcript or of an earlier format')
+    expect(seen.shell).toEqual([['rm', '-rf', '--', ...gone.slice(2), ...gone.slice(0, 2)]])
+    expect(seen.writes[LOG]).toContain('deleted 3 file(s) of sessions without a transcript')
   })
 
-  test('a fork that switched deletes the keys of the session it replaced and keeps the fork stats', async ($, on) => {
-    const { clock, seen, store } = world(on, { tokens: 100, rows: () => conversation().rows, session: { id: ID, switchOnResume: true } })
+  test('a fork that switched deletes the queue of the session it replaced and keeps the stats it had, for a restore', async ($, on) => {
+    const { clock, seen } = world(on, { tokens: 100, rows: () => conversation().rows, session: { id: ID, switchOnResume: true } })
     await start($)
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
+    expect(JSON.parse(seen.writes[sessionFile(ID, 'queue')]!)).toHaveLength(1)
     await complete($)
     await clock.advance(1000)
     const to = seen.resumes[0]!.replace('resume ', '')
-    expect([...store.keys()].sort()).toEqual(['log', `stats2:${to}`])
+    expect(JSON.parse(seen.writes[sessionFile(to, 'stats')]!).segments).toHaveLength(2)
+    expect(seen.shell).toContainEqual(['rm', '-rf', '--', STATUS, sessionFile(ID, 'queue')])
+    expect(seen.shell.flat()).not.toContain(sessionFile(ID, 'stats'))
+  })
+
+  test('a session file that does not parse is an error naming it', async ($, on) => {
+    world(on, { rows: () => conversation().rows, texts: { [sessionFile(ID, 'stats')]: '{"segm' } })
+    await start($)
+    expect((await ($ as any).command.run({ command: 'dcp-stats', args: '' })).text).toMatch(new RegExp(`^dcp: could not parse ${sessionFile(ID, 'stats')}: `))
+  })
+
+  test('the log keeps its last 200 lines', async ($, on) => {
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i}`)
+    const { seen } = world(on, { rows: () => conversation().rows, texts: { [LOG]: lines.join('\n') + '\n', [sessionFile('gone-id', 'queue')]: '[]' } })
+    await start($)
+    const kept = seen.writes[LOG]!.split('\n')
+    expect(kept).toHaveLength(201)
+    expect(kept.slice(0, 2)).toEqual(['line 1', 'line 2'])
+    expect(kept.at(-2)).toContain('deleted 1 file(s) of sessions without a transcript')
   })
 })
 
@@ -222,7 +242,7 @@ describe('tool.call tagging and nudges', () => {
   })
 
   test('sends no nudge while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
-    world(on, { tokens: 110000, rows: () => conversation().rows, store: { 'stats2:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) } })
+    world(on, { tokens: 110000, rows: () => conversation().rows, texts: { [sessionFile(ID, 'stats')]: JSON.stringify(recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] })) } })
     await start($)
     expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context).toHaveLength(1)
   })
@@ -431,7 +451,7 @@ describe('mid-turn apply', () => {
     await $.turn.start({ text: 'a scheduled task', turnId: 'turn-2' }) // its work would be missing from the fork
     await clock.advance(1000)
     expect(seen.resumes).toEqual([])
-    expect(seen.shell).toContainEqual(['rm', '-rf', '--', first])
+    expect(seen.shell).toContainEqual(['rm', '-rf', '--', first, sessionFile(first!.split('/').pop()!.replace('.jsonl', ''), 'stats')])
     expect(seen.writes[LOG]).toContain(`fork ${first!.split('/').pop()!.replace('.jsonl', '')} dropped: a turn started in ${ID} after the fork read it`)
     await complete($)
     await clock.advance(1000)
@@ -600,7 +620,6 @@ describe('turn.complete', () => {
     expect(session.id).not.toBe(ID)
     expect(seen.writes[`${HOME}/.claude/dcp-status-${session.id}`]).toBe(seen.statuses.at(-1))
     expect(seen.writes[LOG]).toMatch(/~2\.\dk removed \(estimated; measured at the next reply\), cache rewrite ~\d+/)
-    expect(seen.shell).toContainEqual(['rm', '-rf', '--', STATUS])
   })
 
 
@@ -716,17 +735,11 @@ describe('turn.complete', () => {
   })
 
   test('with nothing queued, pins the real context size and the saving so far, per session', async ($, on) => {
-    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, store: { 'stats2:old-id': measured(5000, 2500), 'stats2:other': measured(999999, 1) } })
+    const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, texts: { [sessionFile(ID, 'stats')]: JSON.stringify(measured(5000, 2500)), [sessionFile('other', 'stats')]: JSON.stringify(measured(999999, 1)) } })
     await start($)
     await complete($)
     expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved 2.5k so far')
     expect(seen.writes[STATUS]).toBe(seen.statuses.at(-1))
-  })
-
-  test('ignores stats stored by an earlier version of the plugin under the old key', async ($, on) => {
-    world(on, { tokens: 100, rows: () => conversation().rows, store: { 'stats:old-id': measured(5000, 2500) } })
-    await start($)
-    expect((await ($ as any).command.run({ command: 'dcp-stats', args: '' })).text).toContain('0 forks over 0 turns; 0 tokens removed')
   })
 
   test('with nothing saved yet, shows 0', async ($, on) => {
@@ -947,8 +960,8 @@ describe('/dcp-prune', () => {
 
 describe('classic.Stop', () => {
   const stop = ($: any, extra = {}) => $.classic.Stop({ stop_hook_active: false, ...extra })
-  async function toolTurn($: any, on: On, tokens: number | undefined, store?: Record<string, unknown>) {
-    const w = world(on, { tokens, rows: () => conversation().rows, store })
+  async function toolTurn($: any, on: On, tokens: number | undefined, texts?: Record<string, string>) {
+    const w = world(on, { tokens, rows: () => conversation().rows, texts })
     await start($)
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     return w
@@ -1015,7 +1028,7 @@ describe('classic.Stop', () => {
   })
 
   test('lets the stop through while the engine still counts the old session: the last fork has not seen its first request', async ($, on) => {
-    await toolTurn($, on, 160000, { 'stats2:old-id': recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] }) })
+    await toolTurn($, on, 160000, { [sessionFile(ID, 'stats')]: JSON.stringify(recordFork(emptyStats(), { before: 1, estimated: 1, copied: 1, gone: [] })) })
     expect((await stop($)).block).toBeUndefined()
   })
 

@@ -1,7 +1,7 @@
 import type { Dollar } from './register'
 import { claudeDir, commands, exec, run } from './platform'
 
-const ARCHIVE = 'archive'
+export const ARCHIVE = 'archive'
 /** Where compress calls save tool outputs: beside the transcripts, outside any session folder, so no fork or archive moves them. */
 export const OUTPUTS = 'dcp-outputs'
 const DAY_MS = 86_400_000
@@ -58,7 +58,7 @@ export async function pruneArchive($: Dollar, dir: string, days: number): Promis
   const cutoff = (await $.clock.now()) - days * DAY_MS
   const old = (await archived($, dir)).filter(s => s.mtimeMs < cutoff)
   const { remove, removeOlder } = await commands($)
-  for (const { id } of old) await run($, remove([`${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`, `${await claudeDir($)}/dcp-status-${id}`]))
+  for (const { id } of old) await run($, remove([`${dir}/${ARCHIVE}/${id}.jsonl`, `${dir}/${ARCHIVE}/${id}`]))
   if (await $.fs.exists(`${dir}/${OUTPUTS}`)) await run($, removeOlder(`${dir}/${OUTPUTS}`, days * 24 * 60))
 
   return old.length

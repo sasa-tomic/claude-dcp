@@ -20,8 +20,8 @@ describe('archiving after a fork', () => {
     expect(seen.shell).toEqual([
       ['mkdir', '-p', ARCHIVE],
       ['mv', SRC, `${ARCHIVE}/`],
-      ['rm', '-rf', '--', `${ARCHIVE}/${OLDER}.jsonl`, `${ARCHIVE}/${OLDER}`, `${HOME}/.claude/dcp-status-${OLDER}`],
-      ['rm', '-rf', '--', STATUS],
+      ['rm', '-rf', '--', `${ARCHIVE}/${OLDER}.jsonl`, `${ARCHIVE}/${OLDER}`],
+      ['rm', '-rf', '--', STATUS, `${HOME}/.claude/dcp/${ID}.queue.json`],
     ])
     expect(files.has(SRC)).toBe(false)
     expect(files.has(`${ARCHIVE}/${ID}.jsonl`)).toBe(true)
