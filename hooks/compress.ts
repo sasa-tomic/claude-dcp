@@ -1,10 +1,10 @@
 import { parseRef } from './ids'
-import { type Block, type Index, SYNTHETIC_MODEL, type Unit, assistantText, blockText, isQueuedCommand, promptText } from './model'
+import { type Block, type Index, KEPT_USER_HEAD, SYNTHETIC_MODEL, type Unit, assistantText, blockText, isQueuedCommand, promptText } from './model'
 import { isProtected } from './protected'
 import type { Row } from './rows'
 import { PRUNED_COMPRESS_SUMMARY } from './strategies'
 
-export type Entry = { startId: string; endId: string; summary: string; save?: string[] }
+export type Entry = { startId: string; endId: string; summary: string; save?: string[]; drop?: string[] }
 export type CompressArgs = { topic: string; content: Entry[] }
 export type CompressConfig = {
   protectedTools: readonly string[]
@@ -38,6 +38,8 @@ const LABEL_CHARS = 80
 // what a block keeps of the model's own text: its last messages, and the answers of the last turns, which the user may refer back to
 export const RECENT_AI_MESSAGES = 10
 export const ANSWERED_TURNS = 2
+// what a block keeps of the user's messages: all of them up to this many in the conversation; past it a range may drop the marginal ones
+export const KEPT_USER_LIMIT = 30
 // the model's one-word reply after a compress call: no content, so never kept
 export const COMPRESS_REPLY = 'Compressed'
 const USER_HEAD = '### User message'
@@ -58,9 +60,16 @@ const ESCAPED_HEAD_LINE = new RegExp(`^\\\\(?=${ITEM_HEAD})`, 'gm')
 /** A kept item's text as it was said: without its head, its escaped head lines restored. */
 export const itemBody = (k: Kept) => k.text.slice(k.text.indexOf('\n') + 1).replace(ESCAPED_HEAD_LINE, '')
 
-/** One item of what a block keeps or a range may keep, at the row it came from: a user message, a model message, or another kept item. */
-export type Kept = { kind: 'user' | 'ai' | 'other'; row: number; text: string }
-const kindOf = (text: string): Kept['kind'] => (text.startsWith(`${USER_HEAD}\n`) ? 'user' : text.startsWith(`${AI_HEAD}\n`) ? 'ai' : 'other')
+/** One item of what a block keeps or a range may keep, at the row it came from: a user message (with the id of its prompt), a model message, or another kept item. */
+export type Kept = { kind: 'user' | 'ai' | 'other'; row: number; text: string; ref?: string }
+
+function keptItem(text: string, row: number): Kept {
+  if (text.startsWith(`${AI_HEAD}\n`)) return { kind: 'ai', row, text }
+  if (!text.startsWith(USER_HEAD)) return { kind: 'other', row, text }
+  const ref = new RegExp(KEPT_USER_HEAD.source, 'm').exec(text.slice(0, text.indexOf('\n')))?.[1]
+  if (ref === undefined) throw new Error(`the kept user message of the block at row ${row} has no message id: ${JSON.stringify(text.slice(0, 80))}`)
+  return { kind: 'user', row, text, ref }
+}
 
 /** The items a block's summary carries verbatim, at the block's row: those after its first KEPT_HEADER line; a block without one carries none. */
 export function keptOf(summary: string, row: number): Kept[] {
@@ -69,7 +78,7 @@ export function keptOf(summary: string, row: number): Kept[] {
     .split(ITEM_SPLIT)
     .map(text => text.trim())
     .filter(text => text !== '' && !LAUNCH_ITEM.test(text))
-    .map(text => ({ kind: kindOf(text), row, text }))
+    .map(text => keptItem(text, row))
 }
 
 /** The text of a message the user typed: a prompt, or one queued while a turn ran. Hook feedback, task notifications, subagent and plugin prompts are not. */
@@ -87,6 +96,7 @@ function checkArgs(args: CompressArgs): void {
     if (entry.summary.includes(KEPT_HEADER)) throw new PlanError(`content[${i}].summary must not contain ${KEPT_HEADER}: the environment adds that part`)
     if (entry.summary.includes(PRUNED_COMPRESS_SUMMARY)) throw new PlanError(`content[${i}].summary must not contain ${PRUNED_COMPRESS_SUMMARY}: that marks a pruned earlier call; write the summary of this range`)
     if (entry.save !== undefined && (!Array.isArray(entry.save) || !entry.save.every(ref => typeof ref === 'string'))) throw new PlanError(`content[${i}].save must be an array of tool-output IDs`)
+    if (entry.drop !== undefined && (!Array.isArray(entry.drop) || !entry.drop.every(ref => typeof ref === 'string'))) throw new PlanError(`content[${i}].drop must be an array of user-message IDs`)
   })
 }
 
@@ -200,11 +210,16 @@ function conversation(rows: readonly Row[], idx: Index): Kept[] {
   const blocks = new Map([...idx.blocks.values()].map(block => [block.row, block]))
   const items: Kept[] = []
   const said = new Map<string, Kept>()
+  const typedRef = new Map([...idx.units].filter(([ref, unit]) => ref.startsWith('m') && !unit.call).map(([ref, unit]) => [unit.start, ref]))
   rows.forEach((row, i) => {
     const block = blocks.get(i)
     if (block) return items.push(...keptOf(block.summary, block.row))
     const typed = humanText(row)
-    if (typed !== null) return items.push({ kind: 'user', row: i, text: item(USER_HEAD, typed) })
+    if (typed !== null) {
+      const ref = typedRef.get(i)
+      if (ref === undefined) throw new Error(`the message the user typed at row ${i} has no message id: ${JSON.stringify(typed.slice(0, 80))}`)
+      return items.push({ kind: 'user', row: i, ref, text: item(`${USER_HEAD} ${ref}`, typed) })
+    }
     if (row.type !== 'assistant' || row.message?.model === SYNTHETIC_MODEL || assistantText(row).trim() === '') return
     const prior = said.get(row.message.id)
     if (prior) prior.text += assistantText(row)
@@ -229,12 +244,27 @@ function recentAi(items: readonly Kept[]): Set<Kept> {
   return new Set([...messages.filter(k => k.kind === 'ai').slice(-RECENT_AI_MESSAGES), ...answers.slice(-ANSWERED_TURNS)])
 }
 
-/** What the range keeps verbatim, in conversation order: kept items of blocks inside, user messages, recent model messages, protected outputs,
-    saved-output paths. A model message a block kept leaves once a range covering that block finds it no longer recent. */
-function keptItems(rows: readonly Row[], idx: Index, s: number, e: number, config: CompressConfig, saved: ReturnType<typeof savesOf>): string[] {
-  const all = conversation(rows, idx)
-  const recent = recentAi(all)
-  const items: [number, string][] = all.filter(k => k.row >= s && k.row <= e && (k.kind !== 'ai' || recent.has(k))).map(k => [k.row, k.text])
+/** The user messages kept in the conversation, compressed or not. */
+export const keptUserCount = (rows: readonly Row[], idx: Index) => conversation(rows, idx).filter(k => k.kind === 'user').length
+
+/** The user messages an entry drops: allowed only past KEPT_USER_LIMIT, each one kept inside rows `s..e`. */
+function dropsOf(all: readonly Kept[], entry: Entry, index: number, s: number, e: number): Set<string> {
+  const drop = new Set((entry.drop ?? []).map(ref => ref.trim().toLowerCase()))
+  if (drop.size === 0) return drop
+  const users = all.filter(k => k.kind === 'user')
+  if (users.length <= KEPT_USER_LIMIT) throw new PlanError(`content[${index}].drop: the conversation keeps ${users.length} user messages; up to ${KEPT_USER_LIMIT} all stay verbatim, so drop none`)
+  const inside = new Set(users.filter(k => k.row >= s && k.row <= e).map(k => k.ref))
+  const strays = [...drop].filter(ref => !inside.has(ref))
+  if (strays.length > 0) throw new PlanError(`content[${index}].drop: ${strays.join(', ')} ${strays.length === 1 ? 'is not a user message' : 'are not user messages'} kept inside ${entry.startId}..${entry.endId}`)
+  return drop
+}
+
+/** What the range keeps verbatim, in conversation order: kept items of blocks inside, user messages it does not drop, recent model messages,
+    protected outputs, saved-output paths. A model message a block kept leaves once a range covering that block finds it no longer recent. */
+function keptItems(all: readonly Kept[], recent: ReadonlySet<Kept>, idx: Index, s: number, e: number, config: CompressConfig, saved: ReturnType<typeof savesOf>, drop: ReadonlySet<string>): string[] {
+  const items: [number, string][] = all
+    .filter(k => k.row >= s && k.row <= e && (k.kind !== 'user' || !drop.has(k.ref!)) && (k.kind !== 'ai' || recent.has(k)))
+    .map(k => [k.row, k.text])
   for (const c of idx.calls)
     if (c.useRow >= s && c.useRow <= e && c.resultRow !== undefined && !c.isError && c.resultText && !c.isLaunch && isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns))
       items.push([c.useRow, item(`### Tool: ${c.name}`, c.resultText)])
@@ -252,13 +282,15 @@ export function planCompression(rows: readonly Row[], idx: Index, args: Compress
     return { index, entry, s, e }
   })
   assertDisjoint(located)
+  const all = conversation(rows, idx)
+  const recent = recentAi(all)
 
   return located.map(({ index, entry, s, e }) => {
     const inside = new Map([...idx.blocks].filter(([, b]) => b.row >= s && b.row <= e).sort((a, b) => a[1].row - b[1].row))
     const cited = [...inside.keys()].filter(id => new RegExp(`\\(b${id}\\)`).test(entry.summary))
     if (cited.length > 0) throw new PlanError(`content[${index}].summary cites ${cited.map(id => `(b${id})`).join(', ')}, which this range replaces: write what is still needed of them instead`)
     const saved = savesOf(idx, entry, index, s, e, config, outputsDir)
-    const kept = keptItems(rows, idx, s, e, config, saved)
+    const kept = keptItems(all, recent, idx, s, e, config, saved, dropsOf(all, entry, index, s, e))
     const finalSummary = [entry.summary.trim(), ...(kept.length > 0 ? [`${KEPT_HEADER}\n${kept.join('\n\n')}`] : [])].join('\n\n')
     return { index, entry, s, e, messageCount: countMessages(rows, s, e), finalSummary, consumedBlockIds: [...inside.keys()], saves: saved.map(({ call, path }) => ({ path, text: call.resultText })) }
   })

@@ -229,6 +229,15 @@ describe('tool.call tagging and nudges', () => {
     expect(contexts[1][0]).toMatch(/^<dcp-message-id>/)
   })
 
+  test('past the kept-user-message limit, the nudge asks to drop the marginal user messages', async ($, on) => {
+    const t = new Transcript()
+    for (let i = 1; i <= 31; i++) t.prompt(`ask ${i}`, `m${String(i).padStart(4, '0')}`, 'human'), t.text(`answer ${i}`)
+    t.call('Read', { file_path: '/a' }, { ref: 'm0032' })
+    world(on, { tokens: 110000, rows: () => t.rows })
+    await start($)
+    expect((await $.tool.call({ tool: 'Read', file_path: '/x' })).context![0]).toContain('User messages kept verbatim: 31, over the limit of 30.')
+  })
+
   // a hook above dcp's that settles first abandons the call, as an interrupt at the permission prompt does
   const settlesFirst = { name: 'above', tier: 'prepend' as const, register(on: On) { on('tool.call', (_$, e, next) => { void next(e).catch(() => undefined); return { result: 'above', text: 'above' } }) } }
   // the engine kills what a hook starts for an abandoned call, so reading the transcript then fails (`$.process.spawn(grep) aborted`)
@@ -1129,7 +1138,7 @@ describe('ui.render UserMessage', () => {
   test('draws the messages a folded block keeps under its line as they were said, and not the tool outputs it keeps', async ($, on) => {
     world(on, { rows: () => [] })
     await start($)
-    const kept = '[Kept verbatim]\n### User message\nask\n\n### Tool: Task\nREPORT\n\n### AI message\nanswer\n\\### Tool: quoted'
+    const kept = '[Kept verbatim]\n### User message m0001\nask\n\n### Tool: Task\nREPORT\n\n### AI message\nanswer\n\\### Tool: quoted'
     const tree = await render($, `[Compressed conversation section]\nS\n\n${kept}\n\n<dcp-message-id>b7</dcp-message-id>`)
     expect(tree.children.slice(1)).toMatchObject([
       { type: 'Text', props: { dimColor: true }, children: ['> ask'] },

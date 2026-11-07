@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { indexRows } from './model'
-import { answeredRequests, approxTokens, blockReport, callLabel, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
+import { KEPT_USER_LIMIT } from './compress'
+import { answeredRequests, approxTokens, blockReport, callLabel, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar, userReport } from './nudges'
 import { Transcript } from './rows.fixture'
 
 describe('resolveLimit', () => {
@@ -91,6 +92,13 @@ describe('conversation size', () => {
 })
 
 describe('reports', () => {
+  test('user report is empty up to the limit and, past it, asks to drop the marginal user messages', () => {
+    expect(userReport(KEPT_USER_LIMIT)).toBe('')
+    expect(userReport(KEPT_USER_LIMIT + 5)).toBe(
+      `User messages kept verbatim: ${KEPT_USER_LIMIT + 5}, over the limit of ${KEPT_USER_LIMIT}. In each range you compress, list in drop the IDs of user messages that add only marginal value to the task at hand; the rest stay verbatim.`,
+    )
+  })
+
   test('block report with no blocks is one line', () => {
     expect(blockReport(new Map(), 0.25)).toBe('Compressed blocks: 0 (none)')
   })

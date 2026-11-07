@@ -3,11 +3,11 @@ import type { AgentStatus, Hook, Register, RenderElement } from 'claude-code'
 import { applyCompression, staleCopies } from './apply'
 import { ARCHIVE, OUTPUTS, archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
 import { claudeDir, commands, exec, run } from './platform'
-import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, itemBody, keptOf, mergeQueue, planCompression } from './compress'
+import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, itemBody, keptOf, keptUserCount, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine, trailingRef } from './ids'
 import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
 import { continuePrompt, iterationNudge, limitNudge, MERGE_HINT, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
-import { answeredRequests, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar } from './nudges'
+import { answeredRequests, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar, userReport } from './nudges'
 import { isProtected } from './protected'
 import { foldCompressInput, STUB_LIMIT_CHARS, STUB_MAX_CHARS, stopPrompt, stopTier } from './stop'
 import { applyPrunes, callSignature, markPruned, staleReminders, type StrategyConfig } from './strategies'
@@ -48,6 +48,7 @@ const INPUT_SCHEMA = {
           endId: { type: 'string', description: 'Last ID of the range: mNNNN or bN' },
           summary: { type: 'string', description: 'Text that stands in for everything in the range' },
           save: { type: 'array', items: { type: 'string' }, description: 'IDs of tool outputs in the range to keep in files instead of dropping' },
+          drop: { type: 'array', items: { type: 'string' }, description: 'IDs of user messages in the range to drop; allowed only past the kept-user-message limit' },
         },
         required: ['startId', 'endId', 'summary'],
       },
@@ -206,7 +207,7 @@ async function submitOwn($: Dollar, state: State, text: string) {
 }
 
 function guidance(idx: Index, rows: readonly Row[], scale: number) {
-  return [blockReport(idx.blocks, scale), historyReport(rows, idx, scale)].filter(s => s.length > 0).join('\n\n')
+  return [blockReport(idx.blocks, scale), historyReport(rows, idx, scale), userReport(keptUserCount(rows, idx))].filter(s => s.length > 0).join('\n\n')
 }
 
 /** The max limit, raised by the tokens the active summaries hold. */

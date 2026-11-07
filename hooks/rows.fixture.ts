@@ -24,17 +24,19 @@ export class Transcript {
   /** A prompt row, from `origin` (the user's: 'human') and, with `ref`, the hidden-context attachment row that carries its id. */
   prompt(text: string, ref?: string, origin?: string): number {
     const row = this.push({ type: 'user', message: { role: 'user', content: text }, ...(origin ? { origin: { kind: origin } } : {}) })
-    if (ref)
-      this.push({
-        type: 'attachment',
-        attachment: { type: 'hook_additional_context', content: [tagLine(ref).trim()], hookName: 'prompt.submit', hookEvent: 'UserPromptSubmit' },
-      })
+    if (ref) this.tag(ref)
     return row
   }
 
-  /** A message that arrived while a turn ran, which the turn took in. */
-  queued(prompt: string, origin: string): number {
-    return this.push({ type: 'attachment', attachment: { type: 'queued_command', prompt, origin: { kind: origin }, commandMode: 'prompt' } })
+  private tag(ref: string) {
+    this.push({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [tagLine(ref).trim()], hookName: 'prompt.submit', hookEvent: 'UserPromptSubmit' } })
+  }
+
+  /** A message that arrived while a turn ran, which the turn took in, and (with `ref`) the tag row that carries its id. */
+  queued(prompt: string, origin: string, ref?: string): number {
+    const row = this.push({ type: 'attachment', attachment: { type: 'queued_command', prompt, origin: { kind: origin }, commandMode: 'prompt' } })
+    if (ref) this.tag(ref)
+    return row
   }
 
   block(blockId: number, body: string): number {

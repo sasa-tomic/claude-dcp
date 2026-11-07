@@ -2,6 +2,8 @@ import { loneRef, trailingRef } from './ids'
 import type { Row } from './rows'
 
 export const COMPRESSED_BLOCK_HEADER = '[Compressed conversation section]'
+/** The head of a user message a block keeps, with the id its prompt had. */
+export const KEPT_USER_HEAD = /^### User message (m\d{4,})$/gm
 export const COMPRESS_TOOL = 'mcp__dcp__compress'
 const CONTEXT_SUFFIX = '-context'
 /** The model of Claude Code's own placeholder answers ("No response requested."), which carry no usage and were never the model's. */
@@ -125,7 +127,9 @@ export function indexRows(rows: readonly Row[]): Index {
     claim(tag, { start: messageStart(rows, call.useRow), end: i, call })
   })
 
-  const refNumbers = [...units.keys()].filter(r => r.startsWith('m')).map(r => Number(r.slice(1)))
+  // a user message a block keeps holds its id, so ids go on above it
+  const keptRefs = [...blocks.values()].flatMap(b => [...b.summary.matchAll(KEPT_USER_HEAD)].map(m => m[1]))
+  const refNumbers = [...units.keys(), ...keptRefs].filter(r => r.startsWith('m')).map(r => Number(r.slice(1)))
   return {
     units,
     blocks,

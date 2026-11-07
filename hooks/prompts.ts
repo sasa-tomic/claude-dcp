@@ -1,4 +1,4 @@
-import { ANSWERED_TURNS, COMPRESS_REPLY, KEPT_HEADER, RECENT_AI_MESSAGES } from './compress'
+import { ANSWERED_TURNS, COMPRESS_REPLY, KEPT_HEADER, KEPT_USER_LIMIT, RECENT_AI_MESSAGES } from './compress'
 
 export function systemPrompt(tool: string, protectedTools: readonly string[]): string {
   const sections = [
@@ -13,7 +13,7 @@ export function systemPrompt(tool: string, protectedTools: readonly string[]): s
       '- dead ends, failed attempts, superseded file reads and command output: drop these at once, without waiting for the task to close',
     ].join('\n'),
     ['DO NOT COMPRESS:', '- what the next steps need verbatim: files being edited, exact errors, text you will quote', '- work still in progress'].join('\n'),
-    `Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Blocks keep verbatim what the user typed, your last ${RECENT_AI_MESSAGES} text messages and the answers of the last ${ANSWERED_TURNS} turns. Never compress the final answer of a turn: end each range at a tool-output id, so the answer after stays in the context.`,
+    `Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Blocks keep verbatim what the user typed (up to ${KEPT_USER_LIMIT} messages; past that, you may drop the marginal ones: see drop), your last ${RECENT_AI_MESSAGES} text messages and the answers of the last ${ANSWERED_TURNS} turns. Never compress the final answer of a turn: end each range at a tool-output id, so the answer after stays in the context.`,
     'Before each step ask: is anything above closed enough to become summary-only now? If so, compress it now instead of waiting for a limit. Prefer one call with several ranges, largest first.',
   ]
   if (protectedTools.length > 0)
@@ -30,7 +30,9 @@ Boundaries: startId and endId are IDs visible in context, mNNNN for a message an
 
 Blocks inside a range: your summary replaces theirs, so rewrite what is still needed of them, denser; what they kept verbatim (under ${KEPT_HEADER}) is carried over for you.
 
-save: IDs of tool outputs in the range whose text may be needed later. Each is written to a file and its path kept in the block; read the file when you need it. Outputs not saved are gone.`
+save: IDs of tool outputs in the range whose text may be needed later. Each is written to a file and its path kept in the block; read the file when you need it. Outputs not saved are gone.
+
+drop: once the conversation keeps more than ${KEPT_USER_LIMIT} user messages, IDs of user messages in the range that add only marginal value to the task at hand (acknowledgements, superseded or completed requests). They leave the context; every user message not dropped stays verbatim. Kept ones show their ID in their "### User message mNNNN" head.`
 }
 
 const reminder = (lines: string[], guidance: string) => ['<dcp-system-reminder>', ...lines, ...(guidance ? ['', guidance] : []), '</dcp-system-reminder>'].join('\n')

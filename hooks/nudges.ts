@@ -2,6 +2,7 @@ import { blockRef } from './ids'
 import { COMPRESSED_BLOCK_HEADER, type Block, type Index, type ToolCall, type Unit, SYNTHETIC_MODEL, isQueuedCommand, promptText } from './model'
 import type { Row } from './rows'
 import type { TurnUsage } from './stats'
+import { KEPT_USER_LIMIT } from './compress'
 
 const LISTED_BLOCKS = 8
 const LISTED_MESSAGES = 8
@@ -84,6 +85,12 @@ export function blockReport(blocks: ReadonlyMap<number, Block>, scale: number): 
     `2. Merge blocks only if they must live to the end of the session: compress a range over them (e.g. ${blockRef(1)}..${blockRef(8)}) with one denser summary. Merging is lossy and permanent; user messages stay verbatim.`,
     '3. Leave anything uncertain alone.',
   ].join('\n')
+}
+
+/** Past KEPT_USER_LIMIT kept user messages, the ask to drop the marginal ones; empty up to it. */
+export function userReport(count: number): string {
+  if (count <= KEPT_USER_LIMIT) return ''
+  return `User messages kept verbatim: ${count}, over the limit of ${KEPT_USER_LIMIT}. In each range you compress, list in drop the IDs of user messages that add only marginal value to the task at hand; the rest stay verbatim.`
 }
 
 const LISTED_TURNS = 15

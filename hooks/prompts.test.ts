@@ -17,7 +17,7 @@ describe('systemPrompt', () => {
 
   test('steers ranges to start and end at tool outputs, leaving prompts and final answers outside', () => {
     const text = systemPrompt(TOOL, [])
-    expect(text).toContain('Blocks keep verbatim what the user typed, your last 10 text messages and the answers of the last 2 turns.')
+    expect(text).toContain('Blocks keep verbatim what the user typed (up to 30 messages; past that, you may drop the marginal ones: see drop), your last 10 text messages and the answers of the last 2 turns.')
     expect(text).toContain('end each range at a tool-output id')
   })
 
@@ -27,11 +27,12 @@ describe('systemPrompt', () => {
 })
 
 describe('toolDescription', () => {
-  test('carries the id grammar, the block rewrite rule and save, with the tool name', () => {
+  test('carries the id grammar, the block rewrite rule, save and drop, with the tool name', () => {
     const text = toolDescription(TOOL)
     expect(text).toContain('mNNNN for a message and bN for an earlier compressed block')
     expect(text).toContain('your summary replaces theirs')
     expect(text).toContain('save: IDs of tool outputs')
+    expect(text).toContain('drop: once the conversation keeps more than 30 user messages')
     expect(text).toContain(`one ${TOOL} call`)
   })
 })

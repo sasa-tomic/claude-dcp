@@ -20,6 +20,13 @@ describe('indexRows', () => {
     expect(idx.maxBlockId).toBe(1)
   })
 
+  test('numbers on above the ids of the user messages blocks keep, which no row tags any more', () => {
+    const t = new Transcript()
+    t.block(1, 'old\n\n[Kept verbatim]\n### User message m0042\nfirst\n\n### AI message\n### User message m0099 is quoted, not kept')
+    t.prompt('go', 'm0007')
+    expect(indexRows(t.rows).maxMessageRef).toBe(42)
+  })
+
   test('starts a tool unit at the first row of its assistant message', () => {
     const t = new Transcript()
     t.prompt('go', 'm0001')

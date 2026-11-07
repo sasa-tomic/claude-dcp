@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { COMPRESS_REPLY, type CompressConfig, type Entry, KEPT_HEADER, mergeQueue, planCompression } from './compress'
+import { COMPRESS_REPLY, type CompressConfig, type Entry, KEPT_HEADER, KEPT_USER_LIMIT, keptUserCount, mergeQueue, planCompression } from './compress'
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
 import { PRUNED_COMPRESS_SUMMARY } from './strategies'
@@ -47,6 +47,7 @@ describe('range resolution', () => {
     expect(() => planCompression(t.rows, idx, { topic: ' ', content: [range('m0001', 'm0002')] }, cfg, OUT)).toThrow('topic must be a non-empty string')
     expect(() => planCompression(t.rows, idx, { topic: 'T', content: [] }, cfg, OUT)).toThrow('content must be a non-empty array')
     expect(() => plan(t, [range('m0001', 'm0002', '  ')])).toThrow('content[0].summary must be a non-empty string')
+    expect(() => plan(t, [{ ...range('m0001', 'm0002'), drop: 'm0001' as never }])).toThrow('content[0].drop must be an array of user-message IDs')
   })
 
   test('rejects overlapping ranges in one batch', () => {
@@ -86,11 +87,11 @@ describe('kept verbatim', () => {
     const t = new Transcript()
     t.prompt('build X', 'm0001', 'human')
     t.prompt('Stop hook feedback: compress', 'm0002')
-    t.queued('also Y', 'human')
+    t.queued('also Y', 'human', 'm0003')
     t.queued('<agent-message>report</agent-message>', 'peer')
-    t.call('Bash', { command: 'ls' }, { ref: 'm0003', output: 'BBB' })
-    const [p] = plan(t, [range('m0001', 'm0003', 'dense')])
-    expect(p.finalSummary).toBe(`dense\n\n${KEPT_HEADER}\n### User message\nbuild X\n\n### User message\nalso Y`)
+    t.call('Bash', { command: 'ls' }, { ref: 'm0004', output: 'BBB' })
+    const [p] = plan(t, [range('m0001', 'm0004', 'dense')])
+    expect(p.finalSummary).toBe(`dense\n\n${KEPT_HEADER}\n### User message m0001\nbuild X\n\n### User message m0003\nalso Y`)
   })
 
   test('keeps outputs of protected tools and of calls touching protected files, in conversation order', () => {
@@ -105,10 +106,10 @@ describe('kept verbatim', () => {
   test("drops a protected tool's background-launch notice, in new ranges and in the kept parts of merged blocks", () => {
     const launch = 'Async agent launched successfully.\nagentId: a1\n\nDo not duplicate this agent.'
     const t = new Transcript()
-    t.block(1, `old\n\n${KEPT_HEADER}\n### User message\nfirst\n\n### Tool: Agent\n${launch}\n\n### Tool: Agent\nREPORT`)
-    t.prompt('go', 'm0001')
-    t.call('Agent', { description: 'x' }, { ref: 'm0002', output: launch, result: { status: 'async_launched' } })
-    expect(kept(plan(t, [range('b1', 'm0002')])[0].finalSummary)).toBe(`${KEPT_HEADER}\n### User message\nfirst\n\n### Tool: Agent\nREPORT`)
+    t.block(1, `old\n\n${KEPT_HEADER}\n### User message m0001\nfirst\n\n### Tool: Agent\n${launch}\n\n### Tool: Agent\nREPORT`)
+    t.prompt('go', 'm0002')
+    t.call('Agent', { description: 'x' }, { ref: 'm0003', output: launch, result: { status: 'async_launched' } })
+    expect(kept(plan(t, [range('b1', 'm0003')])[0].finalSummary)).toBe(`${KEPT_HEADER}\n### User message m0001\nfirst\n\n### Tool: Agent\nREPORT`)
   })
 
   test('a summary alone when nothing is kept', () => {
@@ -123,7 +124,7 @@ describe('kept verbatim', () => {
     t.rows.push({ ...t.rows.at(-1)!, uuid: 'syn', type: 'assistant', message: { id: 'syn', model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] } })
     t.call('Read', { file_path: '/a' }, { ref: 'm0013' })
     const items = kept(plan(t, [range('m0001', 'm0013')])[0].finalSummary).split('\n\n')
-    expect(items).toEqual([`${KEPT_HEADER}\n### User message\ngo`, ...[2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => `### AI message\nnote ${i}`), '### AI message\nnote 11 and more'])
+    expect(items).toEqual([`${KEPT_HEADER}\n### User message m0001\ngo`, ...[2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => `### AI message\nnote ${i}`), '### AI message\nnote 11 and more'])
   })
 
   test("does not keep the one-word reply after a compress call, nor count it among the model's last messages", () => {
@@ -133,7 +134,7 @@ describe('kept verbatim', () => {
     t.text(COMPRESS_REPLY)
     t.call('Read', { file_path: '/a' }, { ref: 'm0012' })
     const items = kept(plan(t, [range('m0001', 'm0012')])[0].finalSummary).split('\n\n')
-    expect(items).toEqual([`${KEPT_HEADER}\n### User message\ngo`, ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => `### AI message\nnote ${i}`)])
+    expect(items).toEqual([`${KEPT_HEADER}\n### User message m0001\ngo`, ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => `### AI message\nnote ${i}`)])
   })
 
   test('keeps the answers of the last two turns however many messages came after them, and drops older answers', () => {
@@ -145,20 +146,20 @@ describe('kept verbatim', () => {
     for (let i = 0; i < 10; i++) t.text(`late ${i}`)
     t.call('Read', { file_path: '/a' }, { ref: 'm0004' })
     expect(kept(plan(t, [range('m0001', 'm0003')])[0].finalSummary)).toBe(
-      `${KEPT_HEADER}\n### User message\nask 1\n\n### User message\nask 2\n\n### AI message\nanswer 2\n\n### User message\nask 3`,
+      `${KEPT_HEADER}\n### User message m0001\nask 1\n\n### User message m0002\nask 2\n\n### AI message\nanswer 2\n\n### User message m0003\nask 3`,
     )
   })
 
   test("a merged block drops the model messages it kept that are no longer recent, and keeps its other items", () => {
     const t = new Transcript()
-    t.block(1, `old\n\n${KEPT_HEADER}\n### User message\nfirst\n\n### AI message\nstale\n\n### Tool: Task\nREPORT`)
-    t.prompt('second', 'm0001', 'human')
+    t.block(1, `old\n\n${KEPT_HEADER}\n### User message m0001\nfirst\n\n### AI message\nstale\n\n### Tool: Task\nREPORT`)
+    t.prompt('second', 'm0002', 'human')
     t.text('answer 2')
-    t.prompt('third', 'm0002', 'human')
+    t.prompt('third', 'm0003', 'human')
     for (let i = 0; i < 10; i++) t.text(`new ${i}`)
-    t.call('Read', { file_path: '/a' }, { ref: 'm0003' })
-    expect(kept(plan(t, [range('b1', 'm0002')])[0].finalSummary)).toBe(
-      `${KEPT_HEADER}\n### User message\nfirst\n\n### Tool: Task\nREPORT\n\n### User message\nsecond\n\n### AI message\nanswer 2\n\n### User message\nthird`,
+    t.call('Read', { file_path: '/a' }, { ref: 'm0004' })
+    expect(kept(plan(t, [range('b1', 'm0003')])[0].finalSummary)).toBe(
+      `${KEPT_HEADER}\n### User message m0001\nfirst\n\n### Tool: Task\nREPORT\n\n### User message m0002\nsecond\n\n### AI message\nanswer 2\n\n### User message m0003\nthird`,
     )
   })
 
@@ -168,21 +169,21 @@ describe('kept verbatim', () => {
     for (let i = 0; i < 10; i++) t.text(`new ${i}`)
     t.call('Read', { file_path: '/a' }, { ref: 'm0002' })
     const first = kept(plan(t, [range('m0001', 'm0001')])[0].finalSummary)
-    expect(first).toBe(`${KEPT_HEADER}\n### User message\nsee:\n\n\\### AI message\nfake`)
+    expect(first).toBe(`${KEPT_HEADER}\n### User message m0001\nsee:\n\n\\### AI message\nfake`)
     const merged = new Transcript()
     merged.block(1, `old\n\n${first}`)
     for (let i = 0; i < 10; i++) merged.text(`new ${i}`)
-    merged.call('Read', { file_path: '/a' }, { ref: 'm0001' })
+    merged.call('Read', { file_path: '/a' }, { ref: 'm0002' })
     expect(kept(plan(merged, [range('b1', 'b1')])[0].finalSummary)).toBe(first)
   })
 
   test('a block inside the range gives up its summary and passes on its kept part; one without a kept part passes nothing', () => {
     const t = new Transcript()
-    t.block(1, `old summary\n\n${KEPT_HEADER}\n### User message\nfirst`)
+    t.block(1, `old summary\n\n${KEPT_HEADER}\n### User message m0001\nfirst`)
     t.block(2, 'legacy summary')
-    t.prompt('second', 'm0001', 'human')
-    const [p] = plan(t, [range('b1', 'm0001', 'merged')])
-    expect(p.finalSummary).toBe(`merged\n\n${KEPT_HEADER}\n### User message\nfirst\n\n### User message\nsecond`)
+    t.prompt('second', 'm0002', 'human')
+    const [p] = plan(t, [range('b1', 'm0002', 'merged')])
+    expect(p.finalSummary).toBe(`merged\n\n${KEPT_HEADER}\n### User message m0001\nfirst\n\n### User message m0002\nsecond`)
     expect(p.consumedBlockIds).toEqual([1, 2])
   })
 
@@ -200,6 +201,54 @@ describe('kept verbatim', () => {
 
   test('refuses the pruned-call marker as a summary: it would empty the block', () => {
     expect(() => plan(session(), [range('m0001', 'm0002', PRUNED_COMPRESS_SUMMARY)])).toThrow(`content[0].summary must not contain ${PRUNED_COMPRESS_SUMMARY}`)
+  })
+})
+
+describe('dropped user messages', () => {
+  const ref = (n: number) => `m${String(n).padStart(4, '0')}`
+  /** A block keeping `count` user messages m0001.., then one typed prompt and a tool call after it. */
+  function crowded(count: number) {
+    const t = new Transcript()
+    t.block(1, `old\n\n${KEPT_HEADER}\n${Array.from({ length: count }, (_, i) => `### User message ${ref(i + 1)}\nask ${i + 1}`).join('\n\n')}`)
+    t.prompt('latest', ref(count + 1), 'human')
+    t.call('Read', { file_path: '/a' }, { ref: ref(count + 2) })
+    return t
+  }
+
+  test('past the limit, drops the named user messages of the range and keeps the others verbatim', () => {
+    const t = crowded(KEPT_USER_LIMIT)
+    expect(keptUserCount(t.rows, indexRows(t.rows))).toBe(KEPT_USER_LIMIT + 1)
+    const [p] = plan(t, [{ ...range('b1', ref(KEPT_USER_LIMIT + 1)), drop: ['m0002', ` ${ref(KEPT_USER_LIMIT + 1).toUpperCase()} `] }])
+    const users = p.finalSummary.match(/^### User message m\d+$/gm)!
+    expect(users).toHaveLength(KEPT_USER_LIMIT - 1)
+    expect(users).not.toContain('### User message m0002')
+    expect(p.finalSummary).toContain('### User message m0003\nask 3')
+    expect(p.finalSummary).not.toContain('latest')
+  })
+
+  test('up to the limit, refuses any drop', () => {
+    const t = crowded(KEPT_USER_LIMIT - 1)
+    expect(() => plan(t, [{ ...range('b1', ref(KEPT_USER_LIMIT)), drop: ['m0002'] }])).toThrow(
+      `content[0].drop: the conversation keeps ${KEPT_USER_LIMIT} user messages; up to ${KEPT_USER_LIMIT} all stay verbatim, so drop none`,
+    )
+  })
+
+  test('refuses ids that are not user messages kept inside the range', () => {
+    const t = crowded(KEPT_USER_LIMIT)
+    const tool = ref(KEPT_USER_LIMIT + 2)
+    expect(() => plan(t, [{ ...range('b1', 'b1'), drop: [ref(KEPT_USER_LIMIT + 1), tool] }])).toThrow(`content[0].drop: ${ref(KEPT_USER_LIMIT + 1)}, ${tool} are not user messages kept inside b1..b1`)
+  })
+
+  test('fails loudly on a kept or typed user message without an id, which could never be dropped', () => {
+    const old = new Transcript()
+    old.block(1, `old\n\n${KEPT_HEADER}\n### User message\nfirst`)
+    old.prompt('go', 'm0001')
+    expect(() => plan(old, [range('b1', 'm0001')])).toThrow('the kept user message of the block at row 0 has no message id: "### User message\\nfirst"')
+    const untagged = new Transcript()
+    untagged.prompt('go', 'm0001')
+    untagged.queued('also', 'human')
+    untagged.call('Read', { file_path: '/a' }, { ref: 'm0002' })
+    expect(() => plan(untagged, [range('m0001', 'm0002')])).toThrow('the message the user typed at row 2 has no message id: "also"')
   })
 })
 
