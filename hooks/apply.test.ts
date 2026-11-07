@@ -96,6 +96,17 @@ describe('applyCompression', () => {
     expect(kept).not.toContain('queued_command:n-in')
   })
 
+  test('removes the status lines inside the range, and keeps the cron fires and compaction boundaries inside it and the status lines outside it', () => {
+    const t = session()
+    const line = (uuid: string, subtype: string) => ({ ...t.rows[0], uuid, type: 'system', subtype, content: subtype })
+    const inside = ['turn_duration', 'away_summary', 'local_command', 'informational', 'scheduled_task_fire', 'compact_boundary']
+    t.rows.splice(5, 0, ...inside.map(s => line(`${s}-in`, s)))
+    t.rows.push(line('turn_duration-after', 'turn_duration'))
+    const idx = indexRows(t.rows)
+    const out = applyCompression(t.rows, idx, [plan(2, idx.units.get('m0003')!.end, 'S')], ctx)
+    expect(out.flatMap(r => (r.type === 'system' ? [r.uuid] : []))).toEqual(['scheduled_task_fire-in', 'compact_boundary-in', 'turn_duration-after'])
+  })
+
   test('allocates block ids after the highest existing one, in range order, and drops consumed block rows', () => {
     const t = new Transcript()
     t.block(4, 'old block') // 0

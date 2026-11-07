@@ -11,11 +11,20 @@ export function wrapCompressedSummary(blockId: number, summary: string): string 
   return body.length === 0 ? `${COMPRESSED_BLOCK_HEADER}\n${footer}` : `${COMPRESSED_BLOCK_HEADER}\n${body}\n\n${footer}`
 }
 
-// Rows that go with the conversation: messages, task notifications a turn took in, this plugin's id tags, and the token-count reminders,
-// which are stale as soon as the next one arrives. Other attachments (skill and tool listings, instructions, environment, memory) are
-// state Claude Code supplies and stay, less the copies staleCopies finds superseded.
+// The system rows that only print a status line in the scrollback; the model never sees them. Cron fires and compaction boundaries are system
+// rows Claude Code reads back and stay.
+const STATUS_LINES = new Set(['turn_duration', 'away_summary', 'local_command', 'informational'])
+
+// Rows that go with the conversation: messages, task notifications a turn took in, this plugin's id tags, the token-count reminders, which
+// are stale as soon as the next one arrives, and status lines. Other attachments (skill and tool listings, instructions, environment, memory)
+// are state Claude Code supplies and stay, less the copies staleCopies finds superseded.
 const isRemovable = (row: Row) =>
-  row.type === 'user' || row.type === 'assistant' || isQueuedCommand(row) || tagOf(row) !== null || (row.type === 'attachment' && row.attachment?.type === 'total_tokens_reminder')
+  row.type === 'user' ||
+  row.type === 'assistant' ||
+  isQueuedCommand(row) ||
+  tagOf(row) !== null ||
+  (row.type === 'attachment' && row.attachment?.type === 'total_tokens_reminder') ||
+  (row.type === 'system' && STATUS_LINES.has(row.subtype))
 
 // The key under which a later attachment supersedes an earlier one: a memory file (CLAUDE.md) by its path, as Claude Code attaches the whole file
 // again on resume and on entering its directory and only the newest copy is current; any other attachment by the body the model is sent, as an
