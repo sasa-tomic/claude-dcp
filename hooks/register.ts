@@ -609,14 +609,14 @@ export const register: Register = (on, options) => {
   })
 
   // A block is stored as a user row, so the terminal would draw its whole summary as a message: fold it to one line, all of it on ctrl+o.
-  // The messages it keeps stay drawn under that line, user messages dim as typed input, so the conversation reads on across the fold.
+  // The messages it keeps stay drawn under that line, user messages dim as typed input and the agent's as markdown, so the conversation reads on across the fold.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const ref = e.props.text.startsWith(COMPRESSED_BLOCK_HEADER) ? trailingRef(e.props.text) : null
     if (e.props.isExpanded || ref === null) return next(e)
     const line = `${ref} · compressed conversation section · ${formatTokens(e.props.text.length)} chars (ctrl+o to expand)`
     const said = keptOf(e.props.text, 0)
       .filter(k => k.kind !== 'other')
-      .map((k): RenderElement => (k.kind === 'user' ? { type: 'Text', props: { dimColor: true }, children: [`> ${itemBody(k)}`] } : { type: 'Text', props: {}, children: [itemBody(k)] }))
+      .map((k): RenderElement => (k.kind === 'user' ? { type: 'Text', props: { dimColor: true }, children: [`> ${itemBody(k)}`] } : { type: 'Markdown', props: { text: itemBody(k) } }))
 
     return { type: 'Box', props: { flexDirection: 'column', gap: 1 }, children: [{ type: 'Text', props: { dimColor: true }, children: [line] }, ...said] }
   })

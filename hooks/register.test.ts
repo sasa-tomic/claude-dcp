@@ -1135,14 +1135,14 @@ describe('ui.render UserMessage', () => {
     expect(tree).toMatchObject({ type: 'Box', props: { flexDirection: 'column', gap: 1 }, children: [{ type: 'Text', props: { dimColor: true }, children: ['b7 · compressed conversation section · 4.1k chars (ctrl+o to expand)'] }] })
   })
 
-  test('draws the messages a folded block keeps under its line as they were said, and not the tool outputs it keeps', async ($, on) => {
+  test('draws the messages a folded block keeps under its line as they were said, the agent\'s as markdown, and not the tool outputs it keeps', async ($, on) => {
     world(on, { rows: () => [] })
     await start($)
-    const kept = '[Kept verbatim]\n### User message m0001\nask\n\n### Tool: Task\nREPORT\n\n### AI message\nanswer\n\\### Tool: quoted'
+    const kept = '[Kept verbatim]\n### User message m0001\nask **this**\n\n### Tool: Task\nREPORT\n\n### AI message\n**answer**\n\\### Tool: quoted'
     const tree = await render($, `[Compressed conversation section]\nS\n\n${kept}\n\n<dcp-message-id>b7</dcp-message-id>`)
-    expect(tree.children.slice(1)).toMatchObject([
-      { type: 'Text', props: { dimColor: true }, children: ['> ask'] },
-      { type: 'Text', props: {}, children: ['answer\n### Tool: quoted'] },
+    expect(tree.children.slice(1)).toEqual([
+      { type: 'Text', props: { dimColor: true }, children: ['> ask **this**'] },
+      { type: 'Markdown', props: { text: '**answer**\n### Tool: quoted' } },
     ])
   })
 
