@@ -541,7 +541,7 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (!state.active || e.command || e.isMeta) return next(e)
+    if (!state.active || e.isMeta) return next(e)
     resetTurn(state)
 
     return next({ ...e, context: [...(e.context ?? []), tagLine(await nextMessageRef($, state)).trim()] })

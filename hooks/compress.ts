@@ -60,14 +60,14 @@ const ESCAPED_HEAD_LINE = new RegExp(`^\\\\(?=${ITEM_HEAD})`, 'gm')
 /** A kept item's text as it was said: without its head, its escaped head lines restored. */
 export const itemBody = (k: Kept) => k.text.slice(k.text.indexOf('\n') + 1).replace(ESCAPED_HEAD_LINE, '')
 
-/** One item of what a block keeps or a range may keep, at the row it came from: a user message (with the id of its prompt), a model message, or another kept item. */
+/** One item of what a block keeps or a range may keep, at the row it came from: a user message (with the id of its prompt; none for a forked
+    command, which raises no prompt.submit to tag it), a model message, or another kept item. */
 export type Kept = { kind: 'user' | 'ai' | 'other'; row: number; text: string; ref?: string }
 
 function keptItem(text: string, row: number): Kept {
   if (text.startsWith(`${AI_HEAD}\n`)) return { kind: 'ai', row, text }
   if (!text.startsWith(USER_HEAD)) return { kind: 'other', row, text }
   const ref = new RegExp(KEPT_USER_HEAD.source, 'm').exec(text.slice(0, text.indexOf('\n')))?.[1]
-  if (ref === undefined) throw new Error(`the kept user message of the block at row ${row} has no message id: ${JSON.stringify(text.slice(0, 80))}`)
   return { kind: 'user', row, text, ref }
 }
 
@@ -217,8 +217,7 @@ function conversation(rows: readonly Row[], idx: Index): Kept[] {
     const typed = humanText(row)
     if (typed !== null) {
       const ref = typedRef.get(i)
-      if (ref === undefined) throw new Error(`the message the user typed at row ${i} has no message id: ${JSON.stringify(typed.slice(0, 80))}`)
-      return items.push({ kind: 'user', row: i, ref, text: item(`${USER_HEAD} ${ref}`, typed) })
+      return items.push({ kind: 'user', row: i, ref, text: item(ref === undefined ? USER_HEAD : `${USER_HEAD} ${ref}`, typed) })
     }
     if (row.type !== 'assistant' || row.message?.model === SYNTHETIC_MODEL || assistantText(row).trim() === '') return
     const prior = said.get(row.message.id)
@@ -263,7 +262,7 @@ function dropsOf(all: readonly Kept[], entry: Entry, index: number, s: number, e
     protected outputs, saved-output paths. A model message a block kept leaves once a range covering that block finds it no longer recent. */
 function keptItems(all: readonly Kept[], recent: ReadonlySet<Kept>, idx: Index, s: number, e: number, config: CompressConfig, saved: ReturnType<typeof savesOf>, drop: ReadonlySet<string>): string[] {
   const items: [number, string][] = all
-    .filter(k => k.row >= s && k.row <= e && (k.kind !== 'user' || !drop.has(k.ref!)) && (k.kind !== 'ai' || recent.has(k)))
+    .filter(k => k.row >= s && k.row <= e && (k.kind !== 'user' || k.ref === undefined || !drop.has(k.ref)) && (k.kind !== 'ai' || recent.has(k)))
     .map(k => [k.row, k.text])
   for (const c of idx.calls)
     if (c.useRow >= s && c.useRow <= e && c.resultRow !== undefined && !c.isError && c.resultText && !c.isLaunch && isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns))

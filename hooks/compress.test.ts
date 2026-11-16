@@ -239,16 +239,23 @@ describe('dropped user messages', () => {
     expect(() => plan(t, [{ ...range('b1', 'b1'), drop: [ref(KEPT_USER_LIMIT + 1), tool] }])).toThrow(`content[0].drop: ${ref(KEPT_USER_LIMIT + 1)}, ${tool} are not user messages kept inside b1..b1`)
   })
 
-  test('fails loudly on a kept or typed user message without an id, which could never be dropped', () => {
-    const old = new Transcript()
-    old.block(1, `old\n\n${KEPT_HEADER}\n### User message\nfirst`)
-    old.prompt('go', 'm0001')
-    expect(() => plan(old, [range('b1', 'm0001')])).toThrow('the kept user message of the block at row 0 has no message id: "### User message\\nfirst"')
-    const untagged = new Transcript()
-    untagged.prompt('go', 'm0001')
-    untagged.queued('also', 'human')
-    untagged.call('Read', { file_path: '/a' }, { ref: 'm0002' })
-    expect(() => plan(untagged, [range('m0001', 'm0002')])).toThrow('the message the user typed at row 2 has no message id: "also"')
+  test('keeps a typed message no prompt.submit tagged (a forked command) verbatim without an id, counted and never droppable', () => {
+    const t = crowded(KEPT_USER_LIMIT)
+    t.prompt('/fork-skill x', undefined, 'human')
+    t.call('Read', { file_path: '/b' }, { ref: ref(KEPT_USER_LIMIT + 3) })
+    expect(keptUserCount(t.rows, indexRows(t.rows))).toBe(KEPT_USER_LIMIT + 2)
+    const [p] = plan(t, [range(ref(KEPT_USER_LIMIT + 1), ref(KEPT_USER_LIMIT + 3))])
+    expect(p.finalSummary).toContain('### User message\n/fork-skill x')
+    expect(() => plan(t, [{ ...range(ref(KEPT_USER_LIMIT + 1), ref(KEPT_USER_LIMIT + 3)), drop: ['/fork-skill x'] }])).toThrow('is not a user message kept inside')
+  })
+
+  test('carries a kept user message without an id through a later block', () => {
+    const t = new Transcript()
+    t.block(1, `old\n\n${KEPT_HEADER}\n### User message\n/fork-skill x`)
+    t.prompt('go', 'm0001', 'human')
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002' })
+    const [p] = plan(t, [range('b1', 'm0002')])
+    expect(p.finalSummary.slice(p.finalSummary.indexOf(KEPT_HEADER))).toBe(`${KEPT_HEADER}\n### User message\n/fork-skill x\n\n### User message m0001\ngo`)
   })
 })
 

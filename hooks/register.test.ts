@@ -182,10 +182,16 @@ describe('prompt.submit', () => {
     expect(await submit($, 'b')).toMatchObject({ text: 'b', context: ['<dcp-message-id>m0002</dcp-message-id>'] })
   })
 
-  test('leaves slash commands and meta prompts untagged', async ($, on) => {
+  test('tags a slash command that starts a turn, whatever its name: its line is a message the user typed', async ($, on) => {
     world(on, { rows: () => [], exists: false })
     await start($)
-    expect((await submit($, '/clear', { command: { name: 'clear', args: '' } })).context ?? []).toEqual([])
+    expect((await submit($, '/loop 10m go', { command: { name: 'loop', args: '10m go' } })).context).toEqual(['<dcp-message-id>m0001</dcp-message-id>'])
+    expect((await submit($, '/mine:x', { command: { name: 'mine:x', args: '' } })).context).toEqual(['<dcp-message-id>m0002</dcp-message-id>'])
+  })
+
+  test('leaves meta prompts untagged', async ($, on) => {
+    world(on, { rows: () => [], exists: false })
+    await start($)
     expect((await submit($, 'meta', { isMeta: true })).context ?? []).toEqual([])
   })
 
