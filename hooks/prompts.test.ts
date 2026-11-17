@@ -6,7 +6,7 @@ const TOOL = 'mcp__dcp__compress'
 
 describe('systemPrompt', () => {
   test('names the tool, marks injected tags as metadata, and lists protected tools last', () => {
-    const text = systemPrompt(TOOL, ['Task', 'Skill'])
+    const text = systemPrompt(TOOL, ['Task', 'Skill'], true)
     expect(text).toContain(`${TOOL} is your only context tool`)
     expect(text).toContain('COMPRESS a range once')
     expect(text).toContain('DO NOT COMPRESS:')
@@ -16,13 +16,24 @@ describe('systemPrompt', () => {
   })
 
   test('steers ranges to start and end at tool outputs, leaving prompts and final answers outside', () => {
-    const text = systemPrompt(TOOL, [])
+    const text = systemPrompt(TOOL, [], false)
     expect(text).toContain('Blocks keep verbatim what the user typed (up to 30 messages; past that, you may drop the marginal ones: see drop), your last 10 text messages and the answers of the last 2 turns.')
     expect(text).toContain('end each range at a tool-output id')
   })
 
   test('adds no protected-tools paragraph without protected tools', () => {
-    expect(systemPrompt(TOOL, [])).not.toContain('The environment keeps')
+    expect(systemPrompt(TOOL, [], false)).not.toContain('The environment keeps')
+  })
+
+  test('with memory on, asks to save what later sessions need to memory before each call and to keep only the active tasks', () => {
+    const text = systemPrompt(TOOL, [], true)
+    expect(text).toContain(`Before every ${TOOL} call, including the ones reminders ask for, save to memory`)
+    expect(text).toContain('as the Memory section above says')
+    expect(text).toContain('Summaries then keep only what the active tasks need.')
+  })
+
+  test('with memory off, asks for no memory writes', () => {
+    expect(systemPrompt(TOOL, [], false)).not.toMatch(/memory/i)
   })
 })
 

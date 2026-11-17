@@ -1,6 +1,7 @@
 import { ANSWERED_TURNS, COMPRESS_REPLY, KEPT_HEADER, KEPT_USER_LIMIT, RECENT_AI_MESSAGES } from './compress'
 
-export function systemPrompt(tool: string, protectedTools: readonly string[]): string {
+/** `memory`: Claude Code's auto memory is on, so what later sessions may need leaves a range through it instead of a summary. */
+export function systemPrompt(tool: string, protectedTools: readonly string[], memory: boolean): string {
   const sections = [
     'You operate in a context-constrained environment: every request re-sends the whole conversation, so stale content costs tokens and attention on every step. Managing the context continuously is part of your job, not cleanup for later.',
     `${tool} is your only context tool. It replaces ranges of the conversation with summaries you write. A call is applied before your next step when that pays, else at the end of the turn: the session is forked and you continue in it with the ranges gone, prompted by a <dcp-system-reminder>.`,
@@ -16,6 +17,10 @@ export function systemPrompt(tool: string, protectedTools: readonly string[]): s
     `Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Blocks keep verbatim what the user typed (up to ${KEPT_USER_LIMIT} messages; past that, you may drop the marginal ones: see drop), your last ${RECENT_AI_MESSAGES} text messages and the answers of the last ${ANSWERED_TURNS} turns. Never compress the final answer of a turn: end each range at a tool-output id, so the answer after stays in the context.`,
     'Before each step ask: is anything above closed enough to become summary-only now? If so, compress it now instead of waiting for a limit. Prefer one call with several ranges, largest first.',
   ]
+  if (memory)
+    sections.push(
+      `Before every ${tool} call, including the ones reminders ask for, save to memory, as the Memory section above says, what its ranges hold that later sessions may need and the active tasks do not; write it densely. Summaries then keep only what the active tasks need.`,
+    )
   if (protectedTools.length > 0)
     sections.push(`The environment keeps the outputs of ${protectedTools.map(t => `\`${t}\``).join(', ')} through compression. Leave them out of summaries.`)
   return sections.join('\n\n')
@@ -42,7 +47,7 @@ export function limitNudge(tool: string, guidance: string): string {
   return reminder(
     [
       'CRITICAL: the context is over the maximum limit.',
-      `You MUST call ${tool} now, before any other tool. Finish an atomic step in progress first.`,
+      `You MUST call ${tool} now, before continuing the task. Finish an atomic step in progress first.`,
       'Cover as much closed history as is safe in one call, largest and oldest first; the ranges below can be passed as they are. Leave only the newest working messages.',
       'Summaries must carry everything needed to continue.',
     ],

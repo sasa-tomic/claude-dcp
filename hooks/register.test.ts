@@ -172,6 +172,13 @@ describe('prompt.compose', () => {
     expect(dcp.text).toContain('mcp__dcp__compress is your only context tool')
     expect(dcp.text).toContain('The environment keeps the outputs of `Task`, `Agent`, `Skill`, `TodoWrite` through compression.')
   })
+
+  test('asks for memory writes only when the engine prompt has its auto-memory section', async ($, on) => {
+    world(on, { rows: () => [], memory: true })
+    await start($)
+    const { sections } = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+    expect(sections.at(-1)!.text).toContain('save to memory')
+  })
 })
 
 describe('prompt.submit', () => {

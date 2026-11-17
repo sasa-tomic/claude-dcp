@@ -296,6 +296,9 @@ async function assertStubsUnderMin($: Dollar, config: Config, args: CompressArgs
     throw new PlanError(`Context is ${formatTokens(context.tokens)}, under the ${config.minContextLimit} limit: summaries must be stubs of about ${STUB_MAX_CHARS} characters, ${STUB_LIMIT_CHARS} at most (what was dropped and why). ${long.join(', ')}.`)
 }
 
+/** The id of Claude Code's auto-memory section in the system prompt (verified on 2.1.316); absent when auto memory is off. */
+const MEMORY_SECTION = 'memory'
+
 const BUSY_STATUSES: AgentStatus[] = ['pending', 'running', 'waiting']
 
 // the fork moves the old session's folder, which holds the subagents' transcripts: wait until none is working
@@ -537,7 +540,7 @@ export const register: Register = (on, options) => {
     if (!state.active) return next(e)
     const { sections } = await next(e)
 
-    return { sections: [...sections, { id: 'dcp:system', text: systemPrompt(COMPRESS_TOOL, config.protectedTools), scope: 'session' as const }] }
+    return { sections: [...sections, { id: 'dcp:system', text: systemPrompt(COMPRESS_TOOL, config.protectedTools, sections.some(s => s.id === MEMORY_SECTION)), scope: 'session' as const }] }
   })
 
   on('prompt.submit', async ($, e, next) => {

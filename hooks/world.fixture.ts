@@ -21,7 +21,7 @@ export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 export const sessionFile = (id: string, kind: 'queue' | 'stats') => `${HOME}/.claude/dcp/${id}.${kind}.json`
 export const JOBS = `${HOME}/.claude/jobs`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; texts?: Record<string, string>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean; folder?: string }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; texts?: Record<string, string>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean; folder?: string; memory?: boolean }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -57,7 +57,7 @@ export function world(on: On, w: World) {
     yield { kind: 'text' as const, index: 0, text: 'model answer' }
     return { turnId: e.turnId, index: e.index, answer: 'model answer', toolUses: [], stopReason: 'end_turn' as const, usage: null }
   })
-  on('prompt.compose', () => ({ sections: [{ id: 'base', text: 'BASE', scope: 'shared' }] }))
+  on('prompt.compose', () => ({ sections: [{ id: 'base', text: 'BASE', scope: 'shared' }, ...(w.memory ? [{ id: 'memory', text: 'MEMORY', scope: 'session' as const }] : [])] }))
   on('prompt.submit', (_$, e) => {
     if (w.failing === 'prompt.submit') throw new Error('refused')
     seen.prompts.push(e.text)
