@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
 
 import { emptyStats, hashSignature, isAwaitingFirst, recordCall, recordFirstRequest, recordFork, recordTurn, renderStats, savedTokens, type TurnUsage } from './stats'
-import { TOOL, complete, compress, conversation, start, world } from './world.fixture'
+import { test, TOOL, complete, compress, conversation, start, world } from './world.fixture'
 
 const usage = (over: Partial<TurnUsage> = {}): TurnUsage => ({ input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 100, ...over })
 

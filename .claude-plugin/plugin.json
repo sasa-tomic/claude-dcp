@@ -1,6 +1,7 @@
 {
   "name": "dcp",
   "license": "MIT",
+  "dependencies": ["dcp-dispatcher"],
   "description": "Dynamic context pruning: the model compresses closed conversation ranges into summaries; the session is forked and switched to apply them",
   "userConfig": {
     "maxContextLimit": { "type": "string", "title": "Max context limit", "description": "Above this, every turn end demands aggressive compression and tool results carry a nudge. Tokens (100000) or % of the model window (75%). Keep above the min. Optional: raise to tolerate larger contexts.", "default": "100000" },

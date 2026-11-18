@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
 
-import { ARCHIVE, HOME, ID, OLD, OLDER, PROJECT, compress, complete, conversation, start, world } from './world.fixture'
+import { test, ARCHIVE, HOME, ID, OLD, OLDER, PROJECT, compress, complete, conversation, start, world } from './world.fixture'
 
 const archive = ($: any) => $.command.run({ command: 'dcp-archive', args: '' })
 const WINDOWS = { OS: 'Windows_NT', USERPROFILE: HOME, HOME: '/c/Users/u', SystemRoot: 'C:\\Windows' }

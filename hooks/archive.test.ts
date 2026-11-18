@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
 
-import { ARCHIVE, DAY, HOME, ID, JOBS, LOG, OLD, OLDER, PROJECT, SRC, STATUS, compress, complete, conversation, start, world } from './world.fixture'
+import { test, ARCHIVE, DAY, HOME, ID, JOBS, LOG, OLD, OLDER, PROJECT, SRC, STATUS, compress, complete, conversation, start, world } from './world.fixture'
 
 const GOOD_ID = '33333333-3333-4333-8333-333333333333'
 

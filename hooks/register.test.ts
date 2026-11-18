@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { COMPRESS_CALL, CWD, HOME, ID, LOG, OLD, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, sessionFile, start, step, submit, world } from './world.fixture'
+import { test, COMPRESS_CALL, CWD, HOME, ID, LOG, OLD, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, sessionFile, start, step, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
 import { AFTER_CALL, MERGE_HINT } from './prompts'
@@ -403,8 +403,9 @@ describe('mid-turn apply', () => {
     expect(seen.aborts).toEqual(['turn-1'])
     expect(clones(seen)).toEqual([]) // the transcript holds the turn's last results only once it ended
     await aborted($)
-    expect(clones(seen)).toHaveLength(1)
+    expect(clones(seen)).toEqual([]) // no snapshot exists before the idle-time command runs
     await clock.advance(1000)
+    expect(clones(seen)).toHaveLength(1)
     expect(seen.resumes).toEqual([`resume ${session.id}`])
     expect(seen.prompts).toEqual([expect.stringMatching(/^<dcp-system-reminder>\nCompressions applied \(~\d+ removed\)/)])
     expect(seen.origins).toEqual([expect.objectContaining({ asUser: true })])
@@ -459,59 +460,73 @@ describe('mid-turn apply', () => {
     expect(seen.toasts).toEqual([expect.stringContaining('did not happen')])
     expect(seen.prompts).toEqual([])
     await complete($)
+    await clock.advance(1000)
     expect(clones(seen)).toHaveLength(2)
   })
 
-  test('drops a fork when a turn starts in the session before the switch, and forks again when that turn ends', async ($, on) => {
+  test('copies an intervening completed turn instead of resuming an earlier snapshot', async ($, on) => {
+    const t = withCall()
     const session = { id: ID, switchOnResume: true }
-    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows, session })
+    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows, session })
     await start($)
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
     await step($)
     await aborted($)
-    const [first] = clones(seen)
-    await $.turn.start({ text: 'a scheduled task', turnId: 'turn-2' }) // its work would be missing from the fork
-    await clock.advance(1000)
-    expect(seen.resumes).toEqual([])
-    expect(seen.shell).toContainEqual(['rm', '-rf', '--', first, sessionFile(first!.split('/').pop()!.replace('.jsonl', ''), 'stats')])
-    expect(seen.writes[LOG]).toContain(`fork ${first!.split('/').pop()!.replace('.jsonl', '')} dropped: a turn started in ${ID} after the fork read it`)
-    await complete($)
-    await clock.advance(1000)
-    expect(seen.resumes).toEqual([`resume ${session.id}`])
-    expect(session.id).not.toBe(first!.split('/').pop()!.replace('.jsonl', ''))
-  })
-
-  test('drops a fork when a turn starts while the turn end waits for the transcript', async ($, on) => {
-    let rows = conversation().rows
-    const session = { id: ID, switchOnResume: true }
-    const { clock, seen } = world(on, { tokens: 100, rows: () => rows, session })
-    await start($)
-    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
-    await step($)
-    const ending = aborted($)
-    await clock.advance(500)
+    expect(clones(seen)).toEqual([])
     await $.turn.start({ text: 'a scheduled task', turnId: 'turn-2' })
-    rows = withCall().rows
-    await clock.advance(500)
-    await ending
+    t.text('INTERVENING_WORK_MUST_SURVIVE')
+    await complete($, 'INTERVENING_WORK_MUST_SURVIVE')
+    // The later completed turn adds context; the pending request still forces its already-stopped switch.
     await clock.advance(1000)
-    expect(seen.resumes).toEqual([])
-    expect(seen.writes[LOG]).toContain('dropped: a turn started')
+    expect(clones(seen)).toHaveLength(1)
+    expect(seen.writes[clones(seen)[0]!]).toContain('INTERVENING_WORK_MUST_SURVIVE')
+    expect(seen.resumes).toEqual([`resume ${session.id}`])
+    expect(seen.prompts).toEqual([]) // the later turn finished naturally
   })
 
-  test('switches back and drops the fork when a turn ran in the session while the resume waited for it', async ($, on) => {
+  test('keeps the fork when a turn starts in it while the resume call has not returned yet', async ($, on) => {
     const session = { id: ID, switchOnResume: true }
-    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows, session, duringResume: () => $.turn.start({ text: 'queued prompt', turnId: 'turn-2' }) })
+    const { clock, seen } = world(on, { tokens: 100, rows: () => withCall().rows, session, duringResume: () => $.turn.start({ text: 'a scheduled task', turnId: 'turn-2' }) })
     await start($)
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
     await step($)
     await aborted($)
-    const fork = clones(seen)[0]!.split('/').pop()!.replace('.jsonl', '')
     await clock.advance(1000)
-    expect(seen.resumes).toEqual([`resume ${fork}`, `resume ${ID}`])
+    const fork = clones(seen)[0]!.split('/').pop()!.replace('.jsonl', '')
+    expect(seen.resumes).toEqual([`resume ${fork}`])
+    expect(session.id).toBe(fork)
+    expect(seen.shell.flat()).not.toContain(clones(seen)[0])
+    expect(seen.prompts).toHaveLength(1) // the continue prompt
+    expect(seen.writes[LOG]).toContain(`now in ${fork}`)
+  })
+
+  test('refuses the switch if another turn starts during the idle-time check', async ($, on) => {
+    const session = { id: ID, switchOnResume: true }
+    const w: World = { tokens: 100, rows: () => withCall().rows, session }
+    const { clock, seen } = world(on, w)
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    await step($)
+    await aborted($)
+    w.duringId = async () => {
+      w.duringId = undefined
+      await $.turn.start({ text: 'a task notification', turnId: 'turn-2' })
+    }
+    await clock.advance(1000)
+    expect(seen.resumes).toEqual([])
+    expect(clones(seen)).toEqual([])
     expect(session.id).toBe(ID)
-    expect(seen.prompts).toEqual([]) // no continue prompt: the work stays in the old session
-    expect(seen.writes[LOG]).toContain(`fork ${fork} dropped`)
+    expect(seen.toasts).toContainEqual(expect.stringContaining('refused'))
+    expect(seen.prompts).toEqual([])
+  })
+
+  test('lets a resume that is not the pending fork through untouched', async ($, on) => {
+    const session = { id: ID, switchOnResume: true }
+    const { seen } = world(on, { tokens: 100, rows: () => withCall().rows, session })
+    await start($)
+    await $.turn.start({ text: 'a turn', turnId: 'turn-2' })
+    await $.command.run({ command: 'resume', args: OLD, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+    expect(seen.resumes).toEqual([`resume ${OLD}`])
   })
 
   test('makes no second fork of a session while the switch to the first is pending', async ($, on) => {
@@ -523,10 +538,12 @@ describe('mid-turn apply', () => {
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S2' }])
     expect(await step($, 2)).toMatchObject({ answer: 'model answer' }) // not stopped: there is no fork to stop for
     await complete($)
-    expect(clones(seen)).toHaveLength(1)
-    expect(seen.writes[LOG]).toContain('fork waits: an earlier fork has not switched yet')
+    expect(clones(seen)).toHaveLength(0)
     await clock.advance(1000)
+    expect(clones(seen)).toHaveLength(1)
+    expect(seen.writes[clones(seen)[0]!]).toContain('S2')
     await complete($)
+    await clock.advance(1000)
     expect(clones(seen)).toHaveLength(2) // the switch failed in this world, so the queue forks again
   })
 
@@ -657,6 +674,7 @@ describe('turn.complete', () => {
     expect(seen.writes[LOG]).toMatch(/fork waits: it would remove ~\d+ and make the cache rewrite ~2\.\dk \(minRemovedShare 0\.5\)/)
     await compress($, [{ startId: 'm0003', endId: 'm0003', summary: 'listing' }])
     await complete($)
+    await clock.advance(1000)
     expect(clones(seen)).toHaveLength(1)
   })
 
@@ -664,10 +682,11 @@ describe('turn.complete', () => {
     const t = new Transcript()
     t.prompt('goal', 'm0001')
     t.text('all done')
-    const { seen } = world(on, { tokens: 100, rows: () => t.rows })
+    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows })
     await start($)
     await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'goal' }])
     await complete($)
+    await clock.advance(1000)
     expect(seen.toasts.at(-1)).toBe('dcp: the conversation has no two consecutive answered requests to measure its tokens per character on')
     expect(seen.resumes).toEqual([])
   })
@@ -691,6 +710,20 @@ describe('turn.complete', () => {
     expect(seen.fills).toEqual([])
     await clock.advance(1000)
     expect(seen.fills).toEqual(['half-typed message'])
+  })
+
+  test('does not overwrite a newer draft entered while resume runs', async ($, on) => {
+    const session = { id: ID, switchOnResume: true }
+    const w: World = { tokens: 100, rows: () => conversation().rows, session, draft: 'earlier draft' }
+    w.duringResume = () => { w.draft = 'newer draft' }
+    const { clock, seen } = world(on, w)
+    await start($)
+    await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'done' }])
+    await complete($)
+    await clock.advance(1000)
+    expect(seen.fills).toEqual([])
+    expect(w.draft).toBe('newer draft')
+    expect(seen.toasts).toContainEqual(expect.stringContaining('earlier draft'))
   })
 
   test('leaves the box alone when there was no draft', async ($, on) => {
@@ -863,11 +896,12 @@ describe('turn.complete', () => {
   })
   test('a fork that cannot be written fails loudly and does not switch', async ($, on) => {
     const w: World = { tokens: 100, rows: () => conversation().rows }
-    const { seen } = world(on, w)
+    const { clock, seen } = world(on, w)
     await start($)
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'GOAL: did the thing' }])
     w.writeExit = 1
     await complete($)
+    await clock.advance(1000)
     expect(seen.toasts[0]).toContain('could not write the transcript')
     expect(seen.resumes).toEqual([])
   })

@@ -1,4 +1,5 @@
 import type { AgentStatus, Hook, Register, RenderElement } from 'claude-code'
+import type {} from '../dispatcher/types'
 
 import { applyCompression, staleCopies } from './apply'
 import { ARCHIVE, OUTPUTS, archiveSession, listArchive, pruneArchive, restoreSession } from './archive'
@@ -179,7 +180,7 @@ async function readWhen<T>($: Dollar, ready: (rows: Row[], path: string) => T): 
     `stopped`: the turn was stopped for that; its end forks and continues the work in the fork.
     `ran`: the ids of the turn's tool calls, whose results the transcript must hold before a fork copies it.
     `turns`: main-loop turns started in this process; a fork made before the latest one lacks its work.
-    `forking`: a fork is written and its switch pending; a second fork of the same session would race it.
+    `forking`: the fork awaiting its idle-time resume hook; a second fork would race it.
     `ending`: the Stop hook held the turn back to ask for a compress; the turn has no work left, so its compression forks at its end. */
 type State = {
   nextRef: number
@@ -192,7 +193,7 @@ type State = {
   stopped: boolean
   ran: string[]
   turns: number
-  forking: boolean
+  forking: { from: string; to: string; turns: number; current: (rows: Row[], path: string) => void; forced: boolean; then?: (removed: string) => Promise<unknown> } | null
   pruning: boolean
   ending: boolean
   active: boolean
@@ -333,80 +334,87 @@ async function forkPays($: Dollar, config: Config, draft: Draft): Promise<boolea
   return false
 }
 
-/** Applies the queued compressions and the strategies to a copy of the transcript and switches the session to it; false when the
-    fork would cost the cache more than it removes, the compressions then waiting for a larger fork. `forced` skips that check (a
-    /dcp-prune, or a turn already stopped for this fork). `current` throws while the transcript has not caught up with the session;
-    `then` runs in the fork once the switch is done. The queue is cleared only then: a switch that fails leaves it for the next fork.
-    `turns` is the count of turns started when the turn that forks ended: one started since (a scheduled task, a queued prompt)
-    writes into the old session, so the fork is dropped, switching back if the resume waited for that turn, and the queue waits
-    for its end. */
-async function forkQueued($: Dollar, config: Config, state: State, turns: number, current: (rows: Row[], path: string) => void, forced: boolean, then?: (removed: string) => Promise<unknown>): Promise<boolean> {
-  if (state.forking) {
-    await log($, 'fork waits: an earlier fork has not switched yet')
-    return false
-  }
+/** One pending switch per session. The idle-time resume hook reads the latest completed turn and queue. */
+async function forkQueued($: Dollar, state: State, turns: number, current: (rows: Row[], path: string) => void, forced: boolean, then?: (removed: string) => Promise<unknown>): Promise<boolean> {
   const from = await $.session.id()
-  const { rows, path } = await readWhen($, (rows, path) => {
-    try {
-      current(rows, path)
-    } catch (err) {
-      throw new LagError((err as Error).message)
-    }
-    return { rows, path }
-  })
-  const to = crypto.randomUUID()
-  const draft = draftFork(rows, path, await readQueue($, from), config, to)
-  if (!forced && !(await forkPays($, config, draft))) return false
-  const { idx, plans, pruned, out, removed, rewritten } = draft
-  const { context } = await $.session.usage()
-  const dir = path.slice(0, path.lastIndexOf('/'))
-  const saves = plans.flatMap(p => p.saves)
-  if (saves.length > 0) await run($, (await commands($)).mkdir(outputsDir(path)))
-  for (const { path: file, text } of saves) await $.fs.write(file, text)
-  await writeTranscript($, `${dir}/${to}.jsonl`, out)
-  const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
-  const stats = recordFork(await readStats($, from), { before: context.tokens!, estimated: removed, copied: out.length, gone })
-  await writeStats($, to, stats)
-  const delta = removed >= 0 ? `~${formatTokens(removed)} removed` : `~${formatTokens(-removed)} added`
-  const pending = `${delta} (estimated; measured at the next reply)`
-  await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
-  const drop = async () => {
-    await run($, (await commands($)).remove([`${dir}/${to}.jsonl`, await sessionFile($, to, 'stats')]))
-    await log($, `fork ${to} dropped: a turn started in ${from} after the fork read it; the queue waits for that turn's end`)
+  if (state.forking) {
+    if (state.forking.from !== from) throw new Error(`pending fork belongs to ${state.forking.from}, not ${from}`)
+    Object.assign(state.forking, { turns, current, forced: state.forking.forced || forced, then })
+    return true
   }
-  state.forking = true
+  const pending: NonNullable<State['forking']> = { from, to: crypto.randomUUID(), turns, current, forced, then }
+  state.forking = pending
   $.clock.after(RESUME_DELAY_MS, async () => {
     try {
-      if (state.turns !== turns) return await drop()
-      const draftText = (await $.prompt.read()).text
-      await $.command.run({ command: 'resume', args: to })
-      const id = await $.session.id()
-      if (id !== to) throw new Error(`switch to ${to} did not happen; session is ${id}`)
-      if (state.turns !== turns) {
-        await $.command.run({ command: 'resume', args: from })
-        const back = await $.session.id()
-        if (back !== from) throw new Error(`switch back to ${from} did not happen; session is ${back}, a fork that lacks the latest turn`)
-        return await drop()
-      }
-      if (draftText.length > 0) {
-        const { isFilled, refusal } = await $.prompt.fill({ text: draftText })
-        if (!isFilled) throw new Error(`could not put the unsent draft back after the switch (${refusal ?? 'refused by a hook'}); it was: ${draftText}`)
-      }
-      await then?.(delta)
-      const jobs = await archiveSession($, dir, from, to)
-      const deleted = await pruneArchive($, dir, config.archiveDays)
-      await run($, (await commands($)).remove([await statusFile($, from), await sessionFile($, from, 'queue')]))
-      await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
-      await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
-      await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
+      await $.dcpDispatch.resume({ sessionId: pending.to })
     } catch (err) {
+      if (state.forking === pending) state.forking = null
       await report($, err)
-    } finally {
-      state.forking = false
     }
   })
-
   return true
+}
+
+/** Called only inside the host's idle-time command dispatch, never from a turn-complete hook. */
+async function resumeFork($: Dollar, config: Config, state: State, next: () => Promise<unknown>) {
+  const fork = state.forking!
+  const { from, to, turns, current, forced, then } = fork
+  const assertIdle = async () => {
+    const id = await $.session.id()
+    if (id !== from || state.turns !== turns) throw new Error(`fork ${to} refused: session ${id}, turn ${state.turns}; expected ${from}, completed turn ${turns}; source transcript and queue retained`)
+  }
+  try {
+    await assertIdle()
+    if (await agentsBusy($)) throw new Error(`fork ${to} refused: a background agent is working; source transcript and queue retained`)
+    const { rows, path } = await readWhen($, (rows, path) => {
+      try {
+        current(rows, path)
+      } catch (err) {
+        throw new LagError((err as Error).message)
+      }
+      return { rows, path }
+    })
+    const draft = draftFork(rows, path, await readQueue($, from), config, to)
+    if (!forced && !(await forkPays($, config, draft))) return {}
+    const { idx, plans, pruned, out, removed, rewritten } = draft
+    const { context } = await $.session.usage()
+    const dir = path.slice(0, path.lastIndexOf('/'))
+    const saves = plans.flatMap(p => p.saves)
+    if (saves.length > 0) await run($, (await commands($)).mkdir(outputsDir(path)))
+    for (const { path: file, text } of saves) await $.fs.write(file, text)
+    await writeTranscript($, `${dir}/${to}.jsonl`, out)
+    const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
+    const stats = recordFork(await readStats($, from), { before: context.tokens!, estimated: removed, copied: out.length, gone })
+    await writeStats($, to, stats)
+    const delta = removed >= 0 ? `~${formatTokens(removed)} removed` : `~${formatTokens(-removed)} added`
+    const pending = `${delta} (estimated; measured at the next reply)`
+    await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
+    const draftText = (await $.prompt.read()).text
+    await assertIdle()
+    const result = await next()
+    const id = await $.session.id()
+    if (id !== to) throw new Error(`switch to ${to} did not happen; session is ${id}`)
+    // Work may already have run in the fork when next returns. Never roll back or delete it.
+    state.forking = null
+    if (draftText.length > 0) {
+      const after = (await $.prompt.read()).text
+      if (after.length > 0 && after !== draftText) await report($, new Error(`draft changed during the switch; newer text retained; unsent draft before the switch was: ${draftText}`))
+      else if (after.length === 0) {
+        const { isFilled, refusal } = await $.prompt.fill({ text: draftText, mode: 'append' })
+        if (!isFilled) throw new Error(`could not put the unsent draft back after the switch (${refusal ?? 'refused by a hook'}); it was: ${draftText}`)
+      }
+    }
+    const jobs = await archiveSession($, dir, from, to)
+    const deleted = await pruneArchive($, dir, config.archiveDays)
+    await run($, (await commands($)).remove([await statusFile($, from), await sessionFile($, from, 'queue')]))
+    await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
+    await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
+    await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
+    if (then) $.clock.after(0, async () => { await reported($, () => then(delta)) })
+    return result
+  } finally {
+    if (state.forking === fork) state.forking = null
+  }
 }
 
 /** Whether the turn should stop before its next request so the queued compressions apply now: no subagent works, and the fork pays.
@@ -528,7 +536,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, seeded: false, allocating: Promise.resolve(), toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: false, pruning: false, ending: false, active: false }
+  const state: State = { nextRef: 0, seeded: false, allocating: Promise.resolve(), toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: null, pruning: false, ending: false, active: false }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state, e.isInteractive)
@@ -570,6 +578,25 @@ export const register: Register = (on, options) => {
     const nudges = await reported($, () => computeNudges($, config, state))
 
     return { ...result, context: [...(result.context ?? []), ...nudges, tagLine(await nextMessageRef($, state)).trim()] }
+  })
+
+  // $.command.run queues until idle. Check here, not before queueing or after it returns (a turn in the fork can delay that return).
+  on('command.run', { command: 'resume' }, async ($, e, next) => {
+    const fork = state.forking
+    if (fork === null || e.args.trim() !== fork.to) return next(e)
+    try {
+      return await resumeFork($, config, state, () => next(e)) as Awaited<ReturnType<typeof next>>
+    } catch (err) {
+      // A thrown command hook is skipped by the host: answer explicitly so a refused fork cannot resume.
+      await report($, err)
+      return {}
+    }
+  }).catch(async ($, e, next) => {
+    const fork = state.forking
+    if (fork === null || e.args.trim() !== fork.to) return undefined
+    state.forking = null
+    await report($, new Error(`resume hook ${next.error.kind}: ${next.error.message ?? 'no error message supplied by the host'}`))
+    return {}
   })
 
   on('command.run', { command: 'dcp-archive' }, async $ => answer($, async () => listArchive($, await projectDir($))))
@@ -637,7 +664,17 @@ export const register: Register = (on, options) => {
   // continues the work in the fork with a prompt. The transcript holds the turn's last tool results only once the turn has ended, so
   // the fork waits for that. Without this the context would only shrink when the turn ends, however long it runs.
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) state.turns++
+    if (e.agentId === undefined) {
+      state.turns++
+      const fork = state.forking
+      if (fork !== null) {
+        const failure = await $.dcpDispatch.failure({ sessionId: fork.to })
+        if (failure !== null) {
+          state.forking = null
+          await report($, new Error(`dispatch to ${fork.to} failed: ${failure}; source transcript and queue retained`))
+        }
+      }
+    }
 
     return next(e)
   })
@@ -662,7 +699,7 @@ export const register: Register = (on, options) => {
     if (state.stopped) {
       state.stopped = false
       const ran = state.ran
-      await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertAnswered(rows, ran, path), true, removed => submitOwn($, state, continuePrompt(removed))))
+      await reported($, () => forkQueued($, state, turns, (rows, path) => assertAnswered(rows, ran, path), true, removed => submitOwn($, state, continuePrompt(removed))))
       return result
     }
     if (e.reason !== 'answer') return result
@@ -670,7 +707,7 @@ export const register: Register = (on, options) => {
     state.pruning = false
     if ((await readQueue($, await $.session.id())).length === 0) return result
     if (await agentsBusy($)) return result
-    await reported($, () => forkQueued($, config, state, turns, (rows, path) => assertCurrent(rows, e.answer, path), forced))
+    await reported($, () => forkQueued($, state, turns, (rows, path) => assertCurrent(rows, e.answer, path), forced))
 
     return result
   })

@@ -1,5 +1,5 @@
 {
   "name": "claude-dcp",
   "owner": { "name": "sasa-tomic" },
-  "plugins": [{ "name": "dcp", "source": "./" }]
+  "plugins": [{ "name": "dcp", "source": "./" }, { "name": "dcp-dispatcher", "source": "./dispatcher" }]
 }

@@ -1,0 +1,6 @@
+{
+  "name": "dcp-dispatcher",
+  "license": "MIT",
+  "description": "Idle command dispatch for dcp",
+  "types": "./types/index.d.ts"
+}

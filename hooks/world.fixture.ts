@@ -1,5 +1,12 @@
-import { expect, mock } from 'claude-code/testing'
+import { expect, mock, test as runTest } from 'claude-code/testing'
+import type { TestRest } from 'claude-code/testing'
 import type { AgentStatus, On } from 'claude-code'
+import { register as dispatch } from '../dispatcher/hooks/register'
+
+export function test(name: string, ...rest: TestRest) {
+  const [options, body] = rest.length === 1 ? [{}, rest[0]] : rest
+  runTest(name, { ...options, plugins: [{ name: 'dcp-dispatcher', register: dispatch }, ...(options.plugins ?? [])] }, body)
+}
 
 import { indexRows } from './model'
 import { Transcript } from './rows.fixture'
@@ -21,7 +28,7 @@ export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
 export const sessionFile = (id: string, kind: 'queue' | 'stats') => `${HOME}/.claude/dcp/${id}.${kind}.json`
 export const JOBS = `${HOME}/.claude/jobs`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; texts?: Record<string, string>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean; folder?: string; memory?: boolean }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; texts?: Record<string, string>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; duringId?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean; folder?: string; memory?: boolean }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
@@ -67,7 +74,7 @@ export function world(on: On, w: World) {
   on('tool.call', (_$, e) => ({ result: `out of ${e.tool}`, text: `out of ${e.tool}` }) as any)
   const session = w.session ?? { id: ID }
   on('agent.list', () => ({ value: (w.agents ?? []) as any }))
-  on('session.id', () => ({ value: session.id }))
+  on('session.id', async () => { await w.duringId?.(); return { value: session.id } })
   on('session.cwd', () => ({ value: CWD }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: w.tokens, window: 200000 }, rateLimits: [] } }))
   on('fs.list', async (_$, e) => {
@@ -153,8 +160,11 @@ export function world(on: On, w: World) {
   })
   on('command.run', async (_$, e) => {
     seen.resumes.push(`${e.command} ${e.args}`)
+    if (session.switchOnResume) {
+      session.id = e.args
+      w.draft = ''
+    }
     await w.duringResume?.()
-    if (session.switchOnResume) session.id = e.args
     return {}
   })
   return { clock, seen, files, texts }
