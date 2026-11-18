@@ -518,8 +518,17 @@ async function allocateRef($: Dollar, state: State): Promise<string> {
 
 /** A `-p` or SDK run never uses the compressed session, so it pays no tokens for dcp unless DCP_HEADLESS=1 asks for it. */
 async function startSession($: Dollar, state: State, isInteractive: boolean) {
-  state.active = isInteractive || (await $.env.get('DCP_HEADLESS')) === '1'
-  if (!state.active) return
+  state.active = false
+  if (!isInteractive && (await $.env.get('DCP_HEADLESS')) !== '1') return
+  try {
+    const failure = await $.dcpDispatch.failure({ sessionId: await $.session.id() })
+    if (failure !== null) throw new Error(failure)
+  } catch (err) {
+    const error = new Error(`dcp-dispatcher startup check failed: ${err instanceof Error ? err.message : String(err)}; see README.md#install`)
+    await report($, error)
+    throw error
+  }
+  state.active = true
   resetTurn(state)
   await $.command.register({ name: 'dcp-archive', description: 'List sessions dcp archived after compressing' })
   await $.command.register({ name: 'dcp-restore', description: 'Restore an archived session for /resume', argumentHint: '<session id>' })

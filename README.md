@@ -20,7 +20,19 @@ None of these numbers measure this plugin. The studies test retrieval benchmarks
 /plugin install dcp --marketplace sasa-tomic/claude-dcp
 ```
 
-Needs Claude Code 2.1.287 or later (mods). The `prompt.compose` hook does not run in a plugin that a person installs where an organization manages Claude Code.
+The installer automatically installs `dcp-dispatcher`, declared in `.claude-plugin/plugin.json`. No second install command or settings edit is needed. The dispatcher gives automatic `/resume` a separate plugin identity so dcp can intercept it; calls made by a plugin skip that plugin's own hooks. If the dispatcher cannot be reached at startup, dcp reports the error before registering its tool or activating compression.
+
+Validated with Claude Code 2.1.326. The `prompt.compose` hook does not run in a plugin that a person installs where an organization manages Claude Code.
+
+### Local source checkout
+
+Direct directory loading does not install marketplace dependencies. Load both directories in a new session:
+
+```bash
+claude --plugin-dir /path/to/claude-dcp --plugin-dir /path/to/claude-dcp/dispatcher
+```
+
+If using `CLAUDE_CODE_PLUGIN_DIRS` instead, include both directories there, retaining any unrelated plugins. When testing a worktree, replace both paths to the main checkout; directories in that variable load before `--plugin-dir`, and the first plugin with a given name wins. Restart after changing the loaded directory set.
 
 ## Configure
 
@@ -32,12 +44,12 @@ Every option is optional; the defaults suit most sessions. Review and change the
 /plugin marketplace update claude-dcp
 ```
 
-Then `/plugin`, Installed tab, dcp, Update now, then `/reload-plugins`.
+Then `/plugin`, Installed tab, dcp, Update now. Restart Claude Code after updating so the loaded dependency set matches the new code.
 
 ## Remove
 
 ```
-/plugin uninstall dcp
+/plugin uninstall dcp --prune
 /plugin marketplace remove claude-dcp
 /reload-plugins
 ```

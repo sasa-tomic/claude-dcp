@@ -1,4 +1,4 @@
-import { describe, expect } from 'claude-code/testing'
+import { describe, expect, test as withoutDispatcher } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { test, COMPRESS_CALL, CWD, HOME, ID, LOG, OLD, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, sessionFile, start, step, submit, world } from './world.fixture'
@@ -10,6 +10,32 @@ import { Transcript } from './rows.fixture'
 import { parseTranscript, serializeTranscript } from './transcript'
 
 describe('session.start', () => {
+  for (const isInteractive of [true, false]) withoutDispatcher(`refuses to activate without dcp-dispatcher (${isInteractive ? 'interactive' : 'DCP_HEADLESS=1'})`, async ($, on) => {
+    const { seen } = world(on, { rows: () => conversation().rows, env: { DCP_HEADLESS: '1' } })
+    await start($, isInteractive)
+    expect(seen.toasts).toHaveLength(1)
+    expect(seen.toasts[0]).toMatch(/^dcp: dcp-dispatcher startup check failed: .+; see README\.md#install$/)
+    expect(seen.writes[LOG]).toContain(`ERROR ${seen.toasts[0]}`)
+    expect(seen.tools).toEqual([])
+    expect(seen.commands).toEqual([])
+    expect((await submit($)).context).toBeUndefined()
+    await step($)
+    expect(seen.aborts).toEqual([])
+  })
+
+  withoutDispatcher('refuses activation when the dispatcher reports a pending failure', { plugins: [{ name: 'dcp-dispatcher', register(on) {
+    on('engine.create', async (_$, e, next) => {
+      const beneath = await next(e)
+      const dcpDispatch = { resume: async () => {}, failure: async () => 'dispatch unavailable' }
+      return { ...beneath, dcpDispatch }
+    })
+  } }] }, async ($, on) => {
+    const { seen } = world(on, { rows: () => conversation().rows })
+    await start($)
+    expect(seen.toasts[0]).toBe('dcp: dcp-dispatcher startup check failed: dispatch unavailable; see README.md#install')
+    expect(seen.tools).toEqual([])
+  })
+
   test('registers the compress tool with the DCP description, schema and its schema in the tool list', async ($, on) => {
     const { seen } = world(on, { rows: () => conversation().rows })
     await start($)
