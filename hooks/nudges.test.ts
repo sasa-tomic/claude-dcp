@@ -4,6 +4,7 @@ import { indexRows } from './model'
 import { KEPT_USER_LIMIT } from './compress'
 import { answeredRequests, approxTokens, blockReport, callLabel, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar, userReport } from './nudges'
 import { Transcript } from './rows.fixture'
+import type { Row } from './rows'
 
 describe('resolveLimit', () => {
   test('reads token counts and percentages of the model window', () => {
@@ -37,31 +38,37 @@ describe('rowChars', () => {
 })
 
 describe('tokensPerChar', () => {
-  const answer = (id: string, input: number, output: number, text = 'a', model = 'm') => ({ type: 'assistant', message: { id, model, content: [{ type: 'text', text }], usage: { input_tokens: 1, output_tokens: output, cache_read_input_tokens: input - 2, cache_creation_input_tokens: 1 } } })
+  // `input` is the whole input side; `read` the part of it read from the cache, the rest written to it
+  const answer = (id: string, input: number, output: number, text = 'a', model = 'm', read = input - 2) => ({ type: 'assistant', message: { id, model, content: [{ type: 'text', text }], usage: { input_tokens: 1, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: input - 1 - read } } })
   const result = (chars: number) => ({ type: 'user', message: { role: 'user', content: 'y'.repeat(chars) } })
+  const rate = (rows: Row[], from: number, to: number, grew: number) => grew / rowChars(rows.slice(from, to))
 
-  test('divides what the API counted the input to grow between consecutive requests by the characters of the rows added, answer included', () => {
-    const rows = [answer('a', 1000, 50), result(998), answer('b', 1450, 30), result(398), answer('c', 1750, 10)]
-    // the input grew 450 over the first answer and its result, 300 over the second
-    const chars = rowChars(rows.slice(0, 4))
-    expect(tokensPerChar(rows)).toBe(750 / chars)
-    expect(tokensPerChar(rows)).toBeGreaterThan(0.45)
-    expect(tokensPerChar(rows)).toBeLessThan(0.55)
+  test('takes the median over consecutive requests of what the input grew by per character of the rows added, answer included', () => {
+    const rows = [answer('a', 1000, 50), result(998), answer('b', 1450, 30), result(398), answer('c', 1650, 10), result(98), answer('d', 3000, 5)]
+    expect(tokensPerChar(rows)).toBe(rate(rows, 2, 4, 200))
+    expect(tokensPerChar(rows.slice(0, 5))).toBe((rate(rows, 0, 2, 450) + rate(rows, 2, 4, 200)) / 2)
   })
 
   test('counts the rows of one request once, whatever the number of rows the answer spans', () => {
     const rows = [answer('a', 1000, 50), answer('a', 1000, 50, 'b'), result(998), answer('b', 1500, 30)]
-    expect(tokensPerChar(rows)).toBe(500 / rowChars(rows.slice(0, 3)))
+    expect(tokensPerChar(rows)).toBe(rate(rows, 0, 3, 500))
   })
 
-  test('leaves out a pair that does not grow past its answer (the first request after a fork starts over), a pair across a compressed block, and Claude Code placeholder answers', () => {
+  test('leaves out a pair whose second request does not reuse the whole cached prefix (a fork or restart), a pair across a compressed block, and placeholder answers', () => {
+    const restart = [answer('a', 1000, 50), result(998), answer('b', 1450, 30, 'a', 'm', 200), result(398), answer('c', 1750, 10)]
+    expect(tokensPerChar(restart)).toBe(rate(restart, 2, 4, 300))
     const t = new Transcript()
     t.block(1, 'summary')
-    const restart = [answer('a', 5000, 50), result(998), answer('b', 700, 30), result(398), answer('c', 1000, 10)]
-    expect(tokensPerChar(restart)).toBe(300 / rowChars(restart.slice(2, 4)))
-    expect(tokensPerChar([answer('a', 1000, 50), result(998), answer('b', 1450, 30), ...t.rows, answer('c', 1700, 10)])).toBe(450 / rowChars([answer('a', 1000, 50), result(998)]))
+    const block = [answer('a', 1000, 50), result(998), answer('b', 1450, 30), ...t.rows, answer('c', 1700, 10)]
+    expect(tokensPerChar(block)).toBe(rate(block, 0, 2, 450))
     const placeholder = [answer('a', 1000, 50), result(998), answer('s', 0, 0, 'No response requested.', '<synthetic>'), answer('b', 1450, 30)]
-    expect(tokensPerChar(placeholder)).toBe(450 / rowChars(placeholder.slice(0, 3)))
+    expect(tokensPerChar(placeholder)).toBe(rate(placeholder, 0, 3, 450))
+  })
+
+  test('sizes an answer without its thinking, whose signature does not follow the tokens it took', () => {
+    const plain = answer('a', 1000, 50)
+    const thought = { ...plain, message: { ...plain.message, content: [{ type: 'thinking', thinking: '', signature: 'S'.repeat(5000) }, { type: 'redacted_thinking', data: 'R'.repeat(900) }, ...plain.message.content] } }
+    expect(rowChars([thought])).toBe(rowChars([plain]))
   })
 
   test('lists the answered requests once each, in file order, without placeholders and rows that carry no usage', () => {

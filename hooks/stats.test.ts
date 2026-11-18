@@ -68,6 +68,10 @@ describe('/dcp-stats', () => {
     )
   })
 
+  test('says a fork made before the conversation had a rate to estimate it by is not estimated', () => {
+    expect(renderStats(recordFork(emptyStats(), fork({ estimated: undefined })))).toContain('\n2. fork not estimated, not measured until its first request\n')
+  })
+
   test('counts the turns of the session and the repeats of calls a fork compressed away, not those of subagents', async ($, on) => {
     const { clock } = world(on, { tokens: 100, rows: () => conversation().rows, session: { id: 'old-id', switchOnResume: true } })
     await start($)

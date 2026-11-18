@@ -14,9 +14,14 @@ export const approxTokens = (tokens: number) => `~${formatTokens(tokens)}`
 
 const hasText = (row: Row) => row.type === 'user' || row.type === 'assistant'
 
-const rowLength = (row: Row) => (hasText(row) ? JSON.stringify(row.message?.content).length : row.rendered ? JSON.stringify(row.rendered).length : 0)
+const isThinking = (block: any) => block?.type === 'thinking' || block?.type === 'redacted_thinking'
 
-/** What a conversation weighs before it is turned into tokens: the serialized content of its messages and of the attachments the model sees. */
+const visibleContent = (content: unknown) => (Array.isArray(content) ? content.filter(block => !isThinking(block)) : content)
+
+const rowLength = (row: Row) => (hasText(row) ? JSON.stringify(visibleContent(row.message?.content)).length : row.rendered ? JSON.stringify(row.rendered).length : 0)
+
+/** What a conversation weighs before it is turned into tokens: the serialized content of its messages and of the attachments the model sees.
+    Thinking is left out: its signature's length does not follow the tokens the thinking took. */
 export const rowChars = (rows: readonly Row[]) => rows.reduce((sum, row) => sum + rowLength(row), 0)
 
 /** The input side of one request. */
@@ -39,23 +44,28 @@ export function answeredRequests(rows: readonly Row[]): Request[] {
   return found
 }
 
-/** Tokens per character of this conversation, measured on the API's own counts: from one request to the next, the input grows by
-    what the answer and the rows after it weigh. Pairs that do not grow past that answer (the first request after a fork starts
-    over) or that straddle a compressed block are left out. Code and JSON take more tokens per character than prose, so the rate
-    is measured per conversation, never assumed. Undefined while no pair of requests qualifies, as in a conversation of one request. */
+/** Whether `next` reused the whole cached prefix of `prev`: nothing before it changed, as a fork, a restart or a new system prompt would. */
+const reusesPrefix = (prev: TurnUsage, next: TurnUsage) => next.cache_read_input_tokens >= prev.cache_read_input_tokens + prev.cache_creation_input_tokens
+
+/** Tokens per character of this conversation, measured on the API's own counts: when a request reuses the whole cached prefix of the
+    one before, its input grew by what the answer and the rows after it weigh. The median over such pairs, as one pair can be far off
+    (an answer's thinking may be sent back at the tokens it took, which its signature does not show). Pairs across a compressed block
+    are left out. Code and JSON take more tokens per character than prose, so the rate is measured per conversation, never assumed.
+    Undefined while no pair qualifies, as in a conversation of one request. */
 export function tokensPerChar(rows: readonly Row[]): number | undefined {
   const requests = answeredRequests(rows)
-  let [tokens, chars] = [0, 0]
+  const rates: number[] = []
   for (let i = 1; i < requests.length; i++) {
     const [prev, next] = [requests[i - 1], requests[i]]
     const span = rows.slice(prev.first, next.first)
-    const added = inputTokens(next.usage) - inputTokens(prev.usage)
-    if (added <= prev.usage.output_tokens || span.some(row => promptText(row)?.startsWith(COMPRESSED_BLOCK_HEADER))) continue
-    tokens += added
-    chars += rowChars(span)
+    if (!reusesPrefix(prev.usage, next.usage) || span.some(row => promptText(row)?.startsWith(COMPRESSED_BLOCK_HEADER))) continue
+    rates.push((inputTokens(next.usage) - inputTokens(prev.usage)) / rowChars(span))
   }
+  if (rates.length === 0) return undefined
+  rates.sort((a, b) => a - b)
+  const mid = rates.length >> 1
 
-  return chars === 0 ? undefined : tokens / chars
+  return rates.length % 2 === 1 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2
 }
 
 export const tokensOf = (chars: number, scale: number) => Math.round(chars * scale)

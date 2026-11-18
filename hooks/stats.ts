@@ -4,7 +4,7 @@ import { approxTokens, formatTokens, inputTokens } from './nudges'
 export type TurnUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 
 /** The turns between two forks. `before` is the context of the last request before the fork, `first` that of the first request after it,
-    and `removed` their difference. Until that first request is seen (`copied` is set), the fork's own size is only `estimated`. */
+    and `removed` their difference. Until that first request is seen (`copied` is set), the fork's own size is only `estimated`, if the conversation had a rate to estimate it by. */
 export type Segment = {
   removed: number
   before?: number
@@ -51,7 +51,7 @@ export function recordTurn(stats: Stats, context: number, usage: TurnUsage): Sta
 
 /** Opens the segment after a fork, remembering the calls whose output the fork compressed away. `copied` is the number of rows
     of the forked transcript, so the first request after them is the fork's first. */
-export function recordFork(stats: Stats, fork: { before: number; estimated: number; copied: number; gone: readonly string[] }): Stats {
+export function recordFork(stats: Stats, fork: { before: number; estimated: number | undefined; copied: number; gone: readonly string[] }): Stats {
   const opened = { ...segment(0, fork.before), estimated: fork.estimated, copied: fork.copied }
 
   return { ...stats, segments: [...stats.segments, opened], gone: [...stats.gone, ...fork.gone].slice(-GONE_LIMIT) }
@@ -95,7 +95,7 @@ export function renderStats(stats: Stats): string {
     'Context per segment, first → last turn (peak), then what the fork that opened it did:',
     ...stats.segments.map((s, i) => {
       if (i === 0) return s.turns === 0 ? '1. no turn yet' : `1. ${plural(s.turns, 'turn')} · ${formatTokens(s.first)} → ${formatTokens(s.last)} (peak ${formatTokens(s.peak)})`
-      const fork = s.copied === undefined ? `fork removed ${formatTokens(s.removed)} of ${formatTokens(s.before!)}, its first request wrote ${formatTokens(s.rewritten)} to the cache` : `fork estimated at ${approxTokens(s.estimated!)}, not measured until its first request`
+      const fork = s.copied === undefined ? `fork removed ${formatTokens(s.removed)} of ${formatTokens(s.before!)}, its first request wrote ${formatTokens(s.rewritten)} to the cache` : `fork ${s.estimated === undefined ? 'not estimated' : `estimated at ${approxTokens(s.estimated)}`}, not measured until its first request`
 
       return s.turns === 0 && s.copied !== undefined ? `${i + 1}. ${fork}` : `${i + 1}. ${plural(s.turns, 'turn')} · ${formatTokens(s.first)} → ${formatTokens(s.last)} (peak ${formatTokens(s.peak)}) · ${fork}`
     }),

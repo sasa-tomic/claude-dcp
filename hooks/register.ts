@@ -8,7 +8,7 @@ import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queu
 import { messageRef, tagLine, trailingRef } from './ids'
 import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
 import { continuePrompt, iterationNudge, limitNudge, MERGE_HINT, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
-import { answeredRequests, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar, userReport } from './nudges'
+import { answeredRequests, approxTokens, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar, userReport } from './nudges'
 import { isProtected } from './protected'
 import { foldCompressInput, STUB_LIMIT_CHARS, STUB_MAX_CHARS, stopPrompt, stopTier } from './stop'
 import { applyPrunes, callSignature, markPruned, staleReminders, type StrategyConfig } from './strategies'
@@ -307,10 +307,14 @@ async function agentsBusy($: Dollar) {
   return (await $.agent.list()).some(a => BUSY_STATUSES.includes(a.status))
 }
 
-/** Whether a fork that removes `removed` tokens is worth the cache rewrite it causes: everything from its first change on is written again. */
+/** Whether a fork that removes `removed` characters is worth the cache rewrite it causes: everything from its first change on is written again. */
 const paysForRewrite = (config: Config, removed: number, rewritten: number) => removed >= config.minRemovedShare * rewritten
 
-type Draft = { idx: Index; plans: Plan[]; pruned: Set<string>; out: Row[]; scale: number; removed: number; rewritten: number }
+/** Characters in tokens at the conversation's measured rate; in characters while it has no rate yet. */
+const sized = (chars: number, scale: number | undefined) => (scale === undefined ? `${chars} characters` : approxTokens(tokensOf(chars, scale)))
+
+/** `removed` and `rewritten` are characters; `scale` is undefined while the conversation has no rate to turn them into tokens. */
+type Draft = { idx: Index; plans: Plan[]; pruned: Set<string>; out: Row[]; scale: number | undefined; removed: number; rewritten: number }
 
 /** The transcript as the fork would write it, with what it removes and what it makes the cache rewrite: everything from its first change on. */
 function draftFork(rows: readonly Row[], path: string, queued: readonly Queued[], config: Config, to: string): Draft {
@@ -318,18 +322,17 @@ function draftFork(rows: readonly Row[], path: string, queued: readonly Queued[]
   const plans = planCompression(rows, idx, { topic: 'queued', content: queued.map(q => q.entry) }, config, outputsDir(path))
   const pruned = markPruned(idx, config)
   const out = applyCompression(applyPrunes(rows, idx, pruned), idx, plans, { sessionId: to, newUuid: () => crypto.randomUUID() })
-  const scale = tokensPerChar(rows)
-  if (scale === undefined) throw new Error('the conversation has no two consecutive answered requests to measure its tokens per character on')
   const firstChanged = Math.min(...plans.map(p => p.s), ...idx.calls.filter(c => pruned.has(c.id)).map(c => c.useRow), ...staleCopies(rows), ...staleReminders(rows))
-  return { idx, plans, pruned, out, scale, removed: tokensOf(rowChars(rows) - rowChars(out), scale), rewritten: tokensOf(rowChars(out.slice(firstChanged)), scale) }
+  return { idx, plans, pruned, out, scale: tokensPerChar(rows), removed: rowChars(rows) - rowChars(out), rewritten: rowChars(out.slice(firstChanged)) }
 }
 
-/** Whether a fork is worth making now: it removes enough for its cache rewrite, or the context is over the max. Logs why it waits otherwise. */
+/** Whether a fork is worth making now: it removes enough for its cache rewrite, or the context is over the max, which needs the rate
+    the summaries are sized by. Logs why it waits otherwise. */
 async function forkPays($: Dollar, config: Config, draft: Draft): Promise<boolean> {
   const { context } = await $.session.usage()
   if (context.tokens === undefined) throw new Error('no request has been answered yet, so the size of the context is unknown')
-  if (paysForRewrite(config, draft.removed, draft.rewritten) || context.tokens > maxLimit(config, context.window, draft.idx, draft.scale)) return true
-  await log($, `fork waits: it would remove ~${formatTokens(draft.removed)} and make the cache rewrite ~${formatTokens(draft.rewritten)} (minRemovedShare ${config.minRemovedShare})`)
+  if (paysForRewrite(config, draft.removed, draft.rewritten) || (draft.scale !== undefined && context.tokens > maxLimit(config, context.window, draft.idx, draft.scale))) return true
+  await log($, `fork waits: it would remove ${sized(draft.removed, draft.scale)} and make the cache rewrite ${sized(draft.rewritten, draft.scale)} (minRemovedShare ${config.minRemovedShare})`)
 
   return false
 }
@@ -376,7 +379,7 @@ async function resumeFork($: Dollar, config: Config, state: State, next: () => P
     })
     const draft = draftFork(rows, path, await readQueue($, from), config, to)
     if (!forced && !(await forkPays($, config, draft))) return {}
-    const { idx, plans, pruned, out, removed, rewritten } = draft
+    const { idx, plans, pruned, out, scale, removed, rewritten } = draft
     const { context } = await $.session.usage()
     const dir = path.slice(0, path.lastIndexOf('/'))
     const saves = plans.flatMap(p => p.saves)
@@ -384,11 +387,12 @@ async function resumeFork($: Dollar, config: Config, state: State, next: () => P
     for (const { path: file, text } of saves) await $.fs.write(file, text)
     await writeTranscript($, `${dir}/${to}.jsonl`, out)
     const gone = idx.calls.filter(c => plans.some(p => c.useRow >= p.s && c.useRow <= p.e) && !isProtected(c.name, c.input, config.protectedTools, config.protectedFilePatterns)).map(c => hashSignature(callSignature(c.name, c.input)))
-    const stats = recordFork(await readStats($, from), { before: context.tokens!, estimated: removed, copied: out.length, gone })
+    const estimated = scale === undefined ? undefined : tokensOf(removed, scale)
+    const stats = recordFork(await readStats($, from), { before: context.tokens!, estimated, copied: out.length, gone })
     await writeStats($, to, stats)
-    const delta = removed >= 0 ? `~${formatTokens(removed)} removed` : `~${formatTokens(-removed)} added`
+    const delta = `${sized(Math.abs(removed), scale)} ${removed >= 0 ? 'removed' : 'added'}`
     const pending = `${delta} (estimated; measured at the next reply)`
-    await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ~${formatTokens(rewritten)}; resuming`)
+    await log($, `forked ${from} -> ${to}: ${plans.length} ranges compressed, ${pruned.size} tool calls pruned, ${pending}, cache rewrite ${sized(rewritten, scale)}; resuming`)
     const draftText = (await $.prompt.read()).text
     await assertIdle()
     const result = await next()
@@ -409,7 +413,7 @@ async function resumeFork($: Dollar, config: Config, state: State, next: () => P
     await run($, (await commands($)).remove([await statusFile($, from), await sessionFile($, from, 'queue')]))
     await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
     await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
-    await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ~${formatTokens(Math.abs(removed))} (estimate)`)
+    await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ${sized(Math.abs(removed), scale)} (estimate)`)
     if (then) $.clock.after(0, async () => { await reported($, () => then(delta)) })
     return result
   } finally {
@@ -422,10 +426,6 @@ async function resumeFork($: Dollar, config: Config, state: State, next: () => P
 async function stopForFork($: Dollar, config: Config, state: State): Promise<boolean> {
   if (state.forking || (await agentsBusy($))) return false
   const { rows, path } = await loadTranscript($)
-  if (tokensPerChar(rows) === undefined) {
-    await log($, 'turn not stopped for the fork: no two consecutive answered requests to size it by yet; it waits for the turn end')
-    return false
-  }
   return forkPays($, config, draftFork(rows, path, await readQueue($, await $.session.id()), config, 'draft'))
 }
 

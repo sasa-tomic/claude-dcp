@@ -592,16 +592,15 @@ describe('mid-turn apply', () => {
     expect(seen.writes[LOG]).toContain('fork waits')
   })
 
-  test('sends the request as usual while the conversation has no two answered requests to size the fork by', async ($, on) => {
+  test('stops for a fork that pays before the conversation has two answered requests to measure its rate on', async ($, on) => {
     const t = new Transcript()
     t.prompt('goal', 'm0001')
-    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'AAA' })
+    t.call('Read', { file_path: '/a' }, { ref: 'm0002', output: 'A'.repeat(4000) })
     const { seen } = world(on, { tokens: 100, rows: () => t.rows })
     await start($)
     await compress($, [{ startId: 'm0002', endId: 'm0002', summary: 'S' }])
-    expect(await step($)).toMatchObject({ answer: 'model answer' })
-    expect(seen.aborts).toEqual([])
-    expect(seen.writes[LOG]).toContain('turn not stopped for the fork')
+    await step($)
+    expect(seen.aborts).toHaveLength(1)
   })
 
   test('leaves requests alone without a queued compression and in subagents', async ($, on) => {
@@ -704,17 +703,20 @@ describe('turn.complete', () => {
     expect(clones(seen)).toHaveLength(1)
   })
 
-  test('a fork of a conversation with no two answered requests to size it by fails loudly and does not switch', async ($, on) => {
+  test('a fork of a conversation with no rate to turn characters into tokens yet is made and sized in characters', async ($, on) => {
     const t = new Transcript()
-    t.prompt('goal', 'm0001')
+    t.prompt('goal '.repeat(400), 'm0001')
     t.text('all done')
-    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows })
+    const session = { id: ID, switchOnResume: true }
+    const { clock, seen } = world(on, { tokens: 100, rows: () => t.rows, session })
     await start($)
     await compress($, [{ startId: 'm0001', endId: 'm0001', summary: 'goal' }])
     await complete($)
     await clock.advance(1000)
-    expect(seen.toasts.at(-1)).toBe('dcp: the conversation has no two consecutive answered requests to measure its tokens per character on')
-    expect(seen.resumes).toEqual([])
+    expect(session.id).not.toBe(ID)
+    expect(seen.toasts[0]).toMatch(/: \d+ characters removed \(estimated; measured at the next reply\)$/)
+    expect(seen.statuses.at(-1)).toMatch(/^compressed \d+ characters \(estimate\)$/)
+    expect(JSON.parse(seen.writes[sessionFile(session.id, 'stats')]!).segments.at(-1)).not.toHaveProperty('estimated')
   })
 
   test('a fork over the max limit is made however little it removes', async ($, on) => {
