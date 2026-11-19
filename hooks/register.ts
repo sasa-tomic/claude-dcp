@@ -291,7 +291,7 @@ async function assertStubsUnderMin($: Dollar, config: Config, args: CompressArgs
   const { context } = await $.session.usage()
   if (context.tokens === undefined || context.tokens >= resolveLimit(config.minContextLimit, context.window)) return
   const merging = plans.filter(p => p.consumedBlockIds.length > 0).map(p => `${p.entry.startId}..${p.entry.endId} covers ${p.consumedBlockIds.map(n => `b${n}`).join(', ')}`)
-  if (merging.length > 0) throw new PlanError(`Context is ${formatTokens(context.tokens)}, under the ${config.minContextLimit} limit: ranges must not cover compressed blocks; merge them only over the limit. ${merging.join(', ')}.`)
+  if (merging.length > 0) throw new PlanError(`Context is ${formatTokens(context.tokens)}, under the ${config.minContextLimit} limit: blocks can be merged only above it, so ranges must not cover them. ${merging.join(', ')}.`)
   const long = args.content.filter(c => c.summary.length > STUB_LIMIT_CHARS).map(c => `${c.startId}..${c.endId} has ${c.summary.length}`)
   if (long.length > 0)
     throw new PlanError(`Context is ${formatTokens(context.tokens)}, under the ${config.minContextLimit} limit: summaries must be stubs of about ${STUB_MAX_CHARS} characters, ${STUB_LIMIT_CHARS} at most (what was dropped and why). ${long.join(', ')}.`)

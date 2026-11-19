@@ -4,16 +4,16 @@ import { ANSWERED_TURNS, COMPRESS_REPLY, KEPT_HEADER, KEPT_USER_LIMIT, RECENT_AI
 export function systemPrompt(tool: string, protectedTools: readonly string[], memory: boolean): string {
   const sections = [
     'Every request re-sends the whole conversation: stale content costs tokens and attention on every step. Manage the context continuously, not as cleanup later.',
-    `${tool} is your only context tool: it replaces ranges of the conversation with your summaries. A call is applied before your next step when that pays, else at the end of the turn: the session forks and you continue in it, prompted by a <dcp-system-reminder>.`,
+    `${tool} is your only context tool: it replaces ranges of the conversation with your summaries. A call takes effect before your next step if that saves enough, otherwise when the turn ends: the session forks and a <dcp-system-reminder> continues you in the fork.`,
     '<dcp-message-id> tags and <dcp-system-reminder> blocks are injected metadata; never write them. Reminders list the uncompressed ranges with their sizes.',
     'COMPRESS a range once its raw text has served its purpose: settled research, verified work, exhausted exploration. Drop dead ends, failed attempts and superseded reads and output at once.',
     'DO NOT COMPRESS what the next steps need verbatim (files being edited, exact errors, text you will quote) or work in progress.',
-    `Delete big tool outputs first. Blocks keep verbatim what the user typed (up to ${KEPT_USER_LIMIT} messages; past that, you may drop the marginal ones: see drop), your last ${RECENT_AI_MESSAGES} text messages and the answers of the last ${ANSWERED_TURNS} turns. Never compress a turn's final answer: end each range at a tool-output id.`,
+    `Delete big tool outputs first. Compression always keeps verbatim: the user's messages (up to ${KEPT_USER_LIMIT}; past that, list marginal ones in drop), your last ${RECENT_AI_MESSAGES} text messages, and the answers of the last ${ANSWERED_TURNS} turns. Never compress a turn's final answer: end each range at a tool-output id.`,
     'Compress what has closed at once, not at a limit: one call with several ranges, largest first. Small compressions stay queued until together they are worth the fork that applies them.',
   ]
   if (memory)
     sections.push(
-      `Before every ${tool} call, including the ones reminders ask for, save to memory, as the Memory section above says, what its ranges hold that later sessions may need and the active tasks do not, densely. Summaries then keep only what the active tasks need.`,
+      `Before every ${tool} call, including those reminders ask for, save densely to memory (see the Memory section) anything in its ranges that later sessions may need but the active tasks do not. Summaries then keep only what the active tasks need.`,
     )
   if (protectedTools.length > 0)
     sections.push(`The outputs of ${protectedTools.map(t => `\`${t}\``).join(', ')} survive compression; leave them out of summaries.`)
@@ -25,7 +25,7 @@ export function toolDescription(tool: string): string {
 
 Summary: it must let you continue with the range gone. Keep paths, signatures, decisions with their reasons, constraints, findings and open items. Drop failed attempts, bulky output and back-and-forth. Do not repeat user messages or your recent text messages: the environment keeps them verbatim.
 
-Boundaries: startId and endId are IDs visible in context, mNNNN for a message and bN for an earlier compressed block (shown under a "[Compressed conversation section]" header). startId must not come after endId. Ranges in one call must not overlap; pass independent ranges as separate entries of one ${tool} call. A range inside one an earlier call queued is skipped; a range covering queued ones replaces them.
+Boundaries: startId and endId are IDs visible in context, mNNNN for a message and bN for an earlier compressed block (shown under a "[Compressed conversation section]" header). startId must not come after endId. Ranges in one call must not overlap; pass independent ranges as separate entries of one ${tool} call. A range inside a range already queued is skipped; a range covering queued ranges replaces them.
 
 Blocks inside a range: your summary replaces theirs, so rewrite what is still needed of them, denser; what they kept verbatim (under ${KEPT_HEADER}) is carried over for you.
 
@@ -63,7 +63,7 @@ export function iterationNudge(tool: string, guidance: string): string {
 /** The compress tool's answer: what was queued, what an earlier call already covered, and when it takes effect. */
 export function queuedResult(messages: number, notes: readonly string[], agentsBusy: boolean): string {
   return [
-    `Queued ${messages} message${messages === 1 ? '' : 's'} for compression. They leave the context when it is applied: before your next step when it pays, else at the end of the turn. Do not compress them again.`,
+    `Queued ${messages} message${messages === 1 ? '' : 's'} for compression. They are removed before your next step if that saves enough, otherwise when the turn ends. Do not include them in another call.`,
     ...notes,
     ...(agentsBusy ? ['A queued compression cannot execute until all subagents finish. Do not start new subagents; use SendMessage to ask the running ones to wrap up, or TaskStop those you no longer need. After that, use subagents as usual.'] : []),
   ].join('\n')

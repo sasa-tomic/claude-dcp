@@ -17,7 +17,7 @@ describe('systemPrompt', () => {
 
   test('steers ranges to start and end at tool outputs, leaving prompts and final answers outside', () => {
     const text = systemPrompt(TOOL, [], false)
-    expect(text).toContain('Blocks keep verbatim what the user typed (up to 30 messages; past that, you may drop the marginal ones: see drop), your last 10 text messages and the answers of the last 2 turns.')
+    expect(text).toContain("Compression always keeps verbatim: the user's messages (up to 30; past that, list marginal ones in drop), your last 10 text messages, and the answers of the last 2 turns.")
     expect(text).toContain("Never compress a turn's final answer: end each range at a tool-output id.")
   })
 
@@ -33,8 +33,8 @@ describe('systemPrompt', () => {
 
   test('with memory on, asks to save what later sessions need to memory before each call and to keep only the active tasks', () => {
     const text = systemPrompt(TOOL, [], true)
-    expect(text).toContain(`Before every ${TOOL} call, including the ones reminders ask for, save to memory`)
-    expect(text).toContain('as the Memory section above says')
+    expect(text).toContain(`Before every ${TOOL} call, including those reminders ask for, save densely to memory`)
+    expect(text).toContain('(see the Memory section)')
     expect(text).toContain('Summaries then keep only what the active tasks need.')
   })
 

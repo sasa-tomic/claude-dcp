@@ -152,7 +152,7 @@ describe('finding the transcript', () => {
     await start($)
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     w.folder = '-work-proj--claude-worktrees-wt'
-    expect((await $.classic.Stop({ stop_hook_active: false })).block).toContain('VERY AGGRESSIVE')
+    expect((await $.classic.Stop({ stop_hook_active: false })).block).toContain('context over max')
     expect(seen.toasts).toEqual([])
   })
 
@@ -203,7 +203,7 @@ describe('prompt.compose', () => {
     world(on, { rows: () => [], memory: true })
     await start($)
     const { sections } = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
-    expect(sections.at(-1)!.text).toContain('save to memory')
+    expect(sections.at(-1)!.text).toContain('save densely to memory')
   })
 })
 
@@ -358,7 +358,7 @@ describe('compress tool', () => {
     world(on, { tokens: 49000, rows: () => t.rows })
     await start($)
     expect((await compress($, [{ startId: 'b1', endId: 'm0002', summary: 'stub' }])).deny).toBe(
-      'Context is 49.0k, under the 50000 limit: ranges must not cover compressed blocks; merge them only over the limit. b1..m0002 covers b1.',
+      'Context is 49.0k, under the 50000 limit: blocks can be merged only above it, so ranges must not cover them. b1..m0002 covers b1.',
     )
     expect((await compress($, [{ startId: 'm0001', endId: 'm0002', summary: 'stub' }])).result).toContain('Queued')
   })
@@ -1067,7 +1067,7 @@ describe('classic.Stop', () => {
     expect(block).toContain('- m0001..m0003 ')
     expect(block).toContain(AFTER_CALL)
     expect(block).not.toContain('verbatim')
-    expect(block).not.toContain('VERY AGGRESSIVE')
+    expect(block).not.toContain('context over max')
   })
 
   test('a compress made after the hold-back forks at the turn end: the turn is not stopped, nothing is asked to continue', async ($, on) => {
@@ -1085,14 +1085,14 @@ describe('classic.Stop', () => {
   test('from the min limit up, asks to compress and merge the largest chunks', async ($, on) => {
     await toolTurn($, on, 50000)
     const { block } = await stop($)
-    expect(block).toContain('compress and merge')
+    expect(block).toContain('context over min')
     expect(block).not.toContain('max 200 chars')
   })
 
   test('above the max limit, asks to be very aggressive', async ($, on) => {
     await toolTurn($, on, 150001)
     const { block } = await stop($)
-    expect(block).toContain('VERY AGGRESSIVE')
+    expect(block).toContain('context over max')
     expect(block).toContain('especially from the 2-3 most recent turns')
   })
 
@@ -1103,8 +1103,8 @@ describe('classic.Stop', () => {
     await start($)
     await $.tool.call({ tool: 'Read', file_path: '/x' })
     const { block } = await stop($)
-    expect(block).toContain('compress and merge')
-    expect(block).not.toContain('VERY AGGRESSIVE')
+    expect(block).toContain('context over min')
+    expect(block).not.toContain('context over max')
   })
 
   test('lets the stop through while the conversation has no two answered requests to size its messages by', async ($, on) => {
@@ -1129,7 +1129,7 @@ describe('classic.Stop', () => {
     expect((await stop($)).block).toBeUndefined()
     await submit($)
     await $.tool.call({ tool: 'Read', file_path: '/x' })
-    expect((await stop($)).block).toContain('VERY AGGRESSIVE')
+    expect((await stop($)).block).toContain('context over max')
   })
 
   test('lets the stop through when the hook already held it back once', async ($, on) => {
@@ -1148,7 +1148,7 @@ describe('classic.Stop', () => {
     world(on, { tokens: 50000, rows: () => conversation().rows })
     await start($)
     await submit($)
-    expect((await stop($)).block).toContain('compress and merge')
+    expect((await stop($)).block).toContain('context over min')
   })
 
   test('lets the stop through when the model has already queued a compression this turn', async ($, on) => {
