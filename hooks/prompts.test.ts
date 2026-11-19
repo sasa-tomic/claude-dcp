@@ -9,20 +9,26 @@ describe('systemPrompt', () => {
     const text = systemPrompt(TOOL, ['Task', 'Skill'], true)
     expect(text).toContain(`${TOOL} is your only context tool`)
     expect(text).toContain('COMPRESS a range once')
-    expect(text).toContain('DO NOT COMPRESS:')
+    expect(text).toContain('DO NOT COMPRESS what the next steps need')
     expect(text).toContain('<dcp-message-id> tags')
-    expect(text.endsWith('The environment keeps the outputs of `Task`, `Skill` through compression. Leave them out of summaries.')).toBe(true)
+    expect(text.endsWith('The outputs of `Task`, `Skill` survive compression; leave them out of summaries.')).toBe(true)
     expect(text).not.toMatch(/\n\n\n/)
   })
 
   test('steers ranges to start and end at tool outputs, leaving prompts and final answers outside', () => {
     const text = systemPrompt(TOOL, [], false)
     expect(text).toContain('Blocks keep verbatim what the user typed (up to 30 messages; past that, you may drop the marginal ones: see drop), your last 10 text messages and the answers of the last 2 turns.')
-    expect(text).toContain('end each range at a tool-output id')
+    expect(text).toContain("Never compress a turn's final answer: end each range at a tool-output id.")
+  })
+
+  test('says small compressions wait for the fork to pay, and says nothing about subagents', () => {
+    const text = systemPrompt(TOOL, [], false)
+    expect(text).toContain('Small compressions stay queued until together they are worth the fork that applies them.')
+    expect(text).not.toMatch(/subagent/i)
   })
 
   test('adds no protected-tools paragraph without protected tools', () => {
-    expect(systemPrompt(TOOL, [], false)).not.toContain('The environment keeps')
+    expect(systemPrompt(TOOL, [], false)).not.toContain('survive compression')
   })
 
   test('with memory on, asks to save what later sessions need to memory before each call and to keep only the active tasks', () => {
@@ -71,8 +77,13 @@ describe('iterationNudge', () => {
 
 describe('queuedResult', () => {
   test('counts the messages, says when they leave, and lists the notes', () => {
-    expect(queuedResult(1, ['a skipped'])).toMatch(/^Queued 1 message for compression\. .*before your next step.*\na skipped$/s)
-    expect(queuedResult(2, [])).toMatch(/^Queued 2 messages /)
+    expect(queuedResult(1, ['a skipped'], false)).toMatch(/^Queued 1 message for compression\. .*before your next step.*\na skipped$/s)
+    expect(queuedResult(2, [], false)).toMatch(/^Queued 2 messages /)
+  })
+
+  test('with subagents busy, says the compression waits for them and how to end them', () => {
+    expect(queuedResult(1, [], true).endsWith('\nA queued compression cannot execute until all subagents finish. Do not start new subagents; use SendMessage to ask the running ones to wrap up, or TaskStop those you no longer need. After that, use subagents as usual.')).toBe(true)
+    expect(queuedResult(1, [], false)).not.toMatch(/subagent/i)
   })
 })
 

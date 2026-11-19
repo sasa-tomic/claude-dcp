@@ -282,7 +282,7 @@ async function queueCompress($: Dollar, config: Config, state: State, args: Comp
   const { queue, notes } = mergeQueue(await readQueue($, id), plans)
   await writeQueue($, id, queue)
   Object.assign(state, { sinceNudge: Infinity, queuedThisTurn: true, applyPending: true })
-  return queuedResult(plans.filter(p => queue.some(q => q.entry === p.entry)).reduce((n, p) => n + p.messageCount, 0), notes)
+  return queuedResult(plans.filter(p => queue.some(q => q.entry === p.entry)).reduce((n, p) => n + p.messageCount, 0), notes, await agentsBusy($))
 }
 
 /** Under the min limit nothing is paraphrased: a range may only be dropped, with a stub for a summary, and may not cover a block,

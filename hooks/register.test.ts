@@ -196,7 +196,7 @@ describe('prompt.compose', () => {
     expect(dcp.id).toBe('dcp:system')
     expect(dcp.scope).toBe('session')
     expect(dcp.text).toContain('mcp__dcp__compress is your only context tool')
-    expect(dcp.text).toContain('The environment keeps the outputs of `Task`, `Agent`, `Skill`, `TodoWrite` through compression.')
+    expect(dcp.text).toContain('The outputs of `Task`, `Agent`, `Skill`, `TodoWrite` survive compression')
   })
 
   test('asks for memory writes only when the engine prompt has its auto-memory section', async ($, on) => {
@@ -579,6 +579,13 @@ describe('mid-turn apply', () => {
     await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
     expect(await step($)).toMatchObject({ answer: 'model answer' })
     expect(seen.aborts).toEqual([])
+  })
+
+  test('the compress answer says a working subagent blocks it', async ($, on) => {
+    world(on, { tokens: 100, rows: () => withCall().rows, agents: [{ id: 'a', status: 'running' }] })
+    await start($)
+    const r = await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'S' }])
+    expect(r.result).toContain('cannot execute until all subagents finish')
   })
 
   test('sends the request as usual when the fork would not pay for its cache rewrite', async ($, on) => {

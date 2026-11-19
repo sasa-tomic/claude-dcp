@@ -3,26 +3,20 @@ import { ANSWERED_TURNS, COMPRESS_REPLY, KEPT_HEADER, KEPT_USER_LIMIT, RECENT_AI
 /** `memory`: Claude Code's auto memory is on, so what later sessions may need leaves a range through it instead of a summary. */
 export function systemPrompt(tool: string, protectedTools: readonly string[], memory: boolean): string {
   const sections = [
-    'You operate in a context-constrained environment: every request re-sends the whole conversation, so stale content costs tokens and attention on every step. Managing the context continuously is part of your job, not cleanup for later.',
-    `${tool} is your only context tool. It replaces ranges of the conversation with summaries you write. A call is applied before your next step when that pays, else at the end of the turn: the session is forked and you continue in it with the ranges gone, prompted by a <dcp-system-reminder>.`,
-    'Messages and tool results carry <dcp-message-id> tags, and the environment adds <dcp-system-reminder> blocks. Both are injected metadata; never write them yourself. Reminders list the uncompressed history as ranges with their sizes; pick from those.',
-    [
-      'COMPRESS a range once its raw text has served its purpose:',
-      '- research concluded and its findings settled',
-      '- implementation finished and verified',
-      '- exploration exhausted',
-      '- dead ends, failed attempts, superseded file reads and command output: drop these at once, without waiting for the task to close',
-    ].join('\n'),
-    ['DO NOT COMPRESS:', '- what the next steps need verbatim: files being edited, exact errors, text you will quote', '- work still in progress'].join('\n'),
-    `Prefer deleting tool outputs and other big items (file reads, command output, search results, long tool calls). Blocks keep verbatim what the user typed (up to ${KEPT_USER_LIMIT} messages; past that, you may drop the marginal ones: see drop), your last ${RECENT_AI_MESSAGES} text messages and the answers of the last ${ANSWERED_TURNS} turns. Never compress the final answer of a turn: end each range at a tool-output id, so the answer after stays in the context.`,
-    'Before each step ask: is anything above closed enough to become summary-only now? If so, compress it now instead of waiting for a limit. Prefer one call with several ranges, largest first.',
+    'Every request re-sends the whole conversation: stale content costs tokens and attention on every step. Manage the context continuously, not as cleanup later.',
+    `${tool} is your only context tool: it replaces ranges of the conversation with your summaries. A call is applied before your next step when that pays, else at the end of the turn: the session forks and you continue in it, prompted by a <dcp-system-reminder>.`,
+    '<dcp-message-id> tags and <dcp-system-reminder> blocks are injected metadata; never write them. Reminders list the uncompressed ranges with their sizes.',
+    'COMPRESS a range once its raw text has served its purpose: settled research, verified work, exhausted exploration. Drop dead ends, failed attempts and superseded reads and output at once.',
+    'DO NOT COMPRESS what the next steps need verbatim (files being edited, exact errors, text you will quote) or work in progress.',
+    `Delete big tool outputs first. Blocks keep verbatim what the user typed (up to ${KEPT_USER_LIMIT} messages; past that, you may drop the marginal ones: see drop), your last ${RECENT_AI_MESSAGES} text messages and the answers of the last ${ANSWERED_TURNS} turns. Never compress a turn's final answer: end each range at a tool-output id.`,
+    'Compress what has closed at once, not at a limit: one call with several ranges, largest first. Small compressions stay queued until together they are worth the fork that applies them.',
   ]
   if (memory)
     sections.push(
-      `Before every ${tool} call, including the ones reminders ask for, save to memory, as the Memory section above says, what its ranges hold that later sessions may need and the active tasks do not; write it densely. Summaries then keep only what the active tasks need.`,
+      `Before every ${tool} call, including the ones reminders ask for, save to memory, as the Memory section above says, what its ranges hold that later sessions may need and the active tasks do not, densely. Summaries then keep only what the active tasks need.`,
     )
   if (protectedTools.length > 0)
-    sections.push(`The environment keeps the outputs of ${protectedTools.map(t => `\`${t}\``).join(', ')} through compression. Leave them out of summaries.`)
+    sections.push(`The outputs of ${protectedTools.map(t => `\`${t}\``).join(', ')} survive compression; leave them out of summaries.`)
   return sections.join('\n\n')
 }
 
@@ -67,10 +61,11 @@ export function iterationNudge(tool: string, guidance: string): string {
 }
 
 /** The compress tool's answer: what was queued, what an earlier call already covered, and when it takes effect. */
-export function queuedResult(messages: number, notes: readonly string[]): string {
+export function queuedResult(messages: number, notes: readonly string[], agentsBusy: boolean): string {
   return [
     `Queued ${messages} message${messages === 1 ? '' : 's'} for compression. They leave the context when it is applied: before your next step when it pays, else at the end of the turn. Do not compress them again.`,
     ...notes,
+    ...(agentsBusy ? ['A queued compression cannot execute until all subagents finish. Do not start new subagents; use SendMessage to ask the running ones to wrap up, or TaskStop those you no longer need. After that, use subagents as usual.'] : []),
   ].join('\n')
 }
 
