@@ -24,6 +24,8 @@ export type ToolCall = {
   turn: number
 }
 export type Block = { row: number; summary: string }
+/** One id tags two messages: the transcript has two writers, so no range over its ids can be resolved. */
+export class DuplicateIdError extends Error {}
 export type Index = {
   units: Map<string, Unit>
   blocks: Map<number, Block>
@@ -98,7 +100,7 @@ export function indexRows(rows: readonly Row[]): Index {
   const blocks = new Map<number, Block>()
   const claim = (ref: string, unit: Unit) => {
     const prior = units.get(ref)
-    if (prior) throw new Error(`message id ${ref} appears at rows ${prior.end} and ${unit.end}`)
+    if (prior) throw new DuplicateIdError(`message id ${ref} appears at rows ${prior.end} and ${unit.end}: two Claude Code processes most likely wrote this session at once (it was resumed while it still ran), so its ids are ambiguous and compress cannot work in it; tell the user`)
     units.set(ref, unit)
   }
   // the prompt a prompt.submit tag closes: a typed prompt row, or a queued command (a task notification) the turn took in

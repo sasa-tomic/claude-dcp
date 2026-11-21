@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { indexRows } from './model'
+import { DuplicateIdError, indexRows } from './model'
 import { Transcript } from './rows.fixture'
 
 describe('indexRows', () => {
@@ -101,6 +101,7 @@ describe('indexRows', () => {
     const t = new Transcript()
     t.prompt('a', 'm0001')
     t.prompt('b', 'm0001')
-    expect(() => indexRows(t.rows)).toThrow('m0001 appears at rows 1 and 3')
+    expect(() => indexRows(t.rows)).toThrow(DuplicateIdError)
+    expect(() => indexRows(t.rows)).toThrow('m0001 appears at rows 1 and 3: two Claude Code processes')
   })
 })

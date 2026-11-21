@@ -228,6 +228,24 @@ describe('prompt.submit', () => {
     expect((await submit($, 'meta', { isMeta: true })).context ?? []).toEqual([])
   })
 
+  const live = (pid: number, sessionId: string) => [`${HOME}/.claude/sessions/${pid}.json`, JSON.stringify({ pid, sessionId, name: `n${pid}`, tmux: `ai:%${pid}` })]
+
+  test('refuses a prompt while another Claude Code process has the same session open, naming both, and logs it', async ($, on) => {
+    const { seen } = world(on, { rows: () => conversation().rows, texts: Object.fromEntries([live(1, ID), live(2, ID), live(3, 'other-id')]) })
+    await start($)
+    const r = await submit($)
+    expect(r.drop).toBe(`dcp: session ${ID} is open in 2 Claude Code processes: pid 1 (n1, tmux ai:%1), pid 2 (n2, tmux ai:%2). Each writes its transcript, which breaks it; quit all but one, then send the prompt again.`)
+    expect(seen.writes[LOG]).toContain(`ERROR ${r.drop}`)
+    expect(seen.prompts).toEqual([])
+  })
+
+  test('tags the prompt when its process is the only one with the session open', async ($, on) => {
+    const { seen } = world(on, { rows: () => conversation().rows, texts: Object.fromEntries([live(1, ID), live(3, 'other-id')]) })
+    await start($)
+    expect((await submit($)).context).toEqual(['<dcp-message-id>m0004</dcp-message-id>'])
+    expect(seen.prompts).toEqual(['hi'])
+  })
+
   test('attaches only the id tag, whatever the context size: the end-of-turn stop hook does the nudging', async ($, on) => {
     world(on, { tokens: 110000, rows: () => conversation().rows })
     await start($)
@@ -367,6 +385,14 @@ describe('compress tool', () => {
     world(on, { tokens: 50000, rows: () => conversation().rows })
     await start($)
     expect((await compress($, [{ startId: 'm0001', endId: 'm0003', summary: 'x'.repeat(5000) }])).result).toContain('Queued')
+  })
+
+  test('denies a compress in a transcript where one id tags two messages, with the cause, instead of failing the hook', async ($, on) => {
+    const t = conversation()
+    t.prompt('again', 'm0003')
+    world(on, { tokens: 100, rows: () => t.rows })
+    await start($)
+    expect((await compress($, summary('m0001', 'm0002'))).deny).toMatch(/^message id m0003 appears at rows \d+ and \d+: two Claude Code processes/)
   })
 
   test('denies an invalid range with the DCP error so the model can retry', async ($, on) => {

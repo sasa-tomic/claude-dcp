@@ -6,7 +6,7 @@ import { ARCHIVE, OUTPUTS, archiveSession, listArchive, pruneArchive, restoreSes
 import { claudeDir, commands, exec, run } from './platform'
 import { type CompressArgs, type CompressConfig, type Plan, PlanError, type Queued, UNKNOWN_ID, itemBody, keptOf, keptUserCount, mergeQueue, planCompression } from './compress'
 import { messageRef, tagLine, trailingRef } from './ids'
-import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, type Index, indexRows } from './model'
+import { COMPRESS_TOOL, COMPRESSED_BLOCK_HEADER, DuplicateIdError, type Index, indexRows } from './model'
 import { continuePrompt, iterationNudge, limitNudge, MERGE_HINT, prunePrompt, queuedResult, systemPrompt, toolDescription } from './prompts'
 import { answeredRequests, approxTokens, blockReport, formatTokens, historyReport, resolveLimit, rowChars, tokensOf, tokensPerChar, userReport } from './nudges'
 import { isProtected } from './protected'
@@ -516,6 +516,20 @@ async function allocateRef($: Dollar, state: State): Promise<string> {
   return messageRef(++state.nextRef)
 }
 
+/** Every live Claude Code process keeps `sessions/<pid>.json` naming its session. Two on one session (a `--resume` of a
+    session still open elsewhere) append two branches to one transcript, each numbering its own messages, so ids repeat. */
+async function sharedSessionError($: Dollar): Promise<string | undefined> {
+  const id = await $.session.id()
+  const dir = `${await claudeDir($)}/sessions`
+  const entries = (await $.fs.list(dir)).filter(f => f.kind === 'file' && f.name.endsWith('.json'))
+  const live = (await Promise.all(entries.map(async f => JSON.parse(await $.fs.read(`${dir}/${f.name}`)) as { pid: number; sessionId: string; name?: string; tmux?: string })))
+    .filter(p => p.sessionId === id)
+  if (live.length < 2) return undefined
+  const named = live.map(p => `pid ${p.pid} (${[p.name, p.tmux && `tmux ${p.tmux}`].filter(Boolean).join(', ')})`)
+
+  return `session ${id} is open in ${live.length} Claude Code processes: ${named.join(', ')}. Each writes its transcript, which breaks it; quit all but one, then send the prompt again.`
+}
+
 /** A `-p` or SDK run never uses the compressed session, so it pays no tokens for dcp unless DCP_HEADLESS=1 asks for it. */
 async function startSession($: Dollar, state: State, isInteractive: boolean) {
   state.active = false
@@ -562,6 +576,11 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (!state.active || e.isMeta) return next(e)
+    const shared = await reported($, () => sharedSessionError($))
+    if (shared !== undefined) {
+      await report($, new Error(shared))
+      return { drop: `dcp: ${shared}` }
+    }
     resetTurn(state)
 
     return next({ ...e, context: [...(e.context ?? []), tagLine(await nextMessageRef($, state)).trim()] })
@@ -576,7 +595,7 @@ export const register: Register = (on, options) => {
       try {
         result = { result: await queueCompress($, config, state, e as unknown as CompressArgs) }
       } catch (err) {
-        if (err instanceof PlanError || err instanceof LagError) return { deny: err.message }
+        if (err instanceof PlanError || err instanceof LagError || err instanceof DuplicateIdError) return { deny: err.message }
         throw err
       }
     } else result = await next(e)
