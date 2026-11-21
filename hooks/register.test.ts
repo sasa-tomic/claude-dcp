@@ -1,7 +1,7 @@
 import { describe, expect, test as withoutDispatcher } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { test, COMPRESS_CALL, CWD, HOME, ID, LOG, OLD, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, conversation, sessionFile, start, step, submit, world } from './world.fixture'
+import { test, COMPRESS_CALL, CWD, HOME, ID, LOG, OLD, PROJECTS, SRC, STATUS, TOOL, clones, complete, compress, hintTail, conversation, sessionFile, start, step, submit, world } from './world.fixture'
 import type { World } from './world.fixture'
 import { indexRows } from './model'
 import { AFTER_CALL, MERGE_HINT } from './prompts'
@@ -234,9 +234,16 @@ describe('prompt.submit', () => {
     const { seen } = world(on, { rows: () => conversation().rows, texts: Object.fromEntries([live(1, ID), live(2, ID), live(3, 'other-id')]) })
     await start($)
     const r = await submit($)
-    expect(r.drop).toBe(`dcp: session ${ID} is open in 2 Claude Code processes: pid 1 (n1, tmux ai:%1), pid 2 (n2, tmux ai:%2). Each writes its transcript, which breaks it; quit all but one, then send the prompt again.`)
+    expect(r.drop).toBe(`dcp: your prompt was not sent: this session (${ID}) is also open in another Claude Code process, pid 2 (n2, tmux ai:%2), and both writing its history corrupts it. This one is pid 1 (n1, tmux ai:%1). Close one of them, then send your prompt again.`)
     expect(seen.writes[LOG]).toContain(`ERROR ${r.drop}`)
     expect(seen.prompts).toEqual([])
+  })
+
+  test('reports it when it cannot tell which process is its own, and tags nothing', async ($, on) => {
+    const { seen } = world(on, { rows: () => conversation().rows, texts: Object.fromEntries([live(1, ID)]), hookEnv: {} })
+    await start($)
+    expect((await submit($)).context).toBeUndefined()
+    expect(seen.toasts.at(-1)).toBe('dcp: cannot tell which Claude Code process this is: the hook environment has no CLAUDE_PID')
   })
 
   test('tags the prompt when its process is the only one with the session open', async ($, on) => {
@@ -709,13 +716,13 @@ describe('turn.complete', () => {
     const { clock, seen } = await queued($, on, () => t.rows, session)
     await complete($)
     expect(seen.toasts).toEqual([])
-    expect(seen.statuses.filter(s => s?.startsWith('compressed'))).toEqual([])
+    expect(await hintTail($, seen)).not.toMatch(/compressed/)
     await clock.advance(1000)
     expect(seen.toasts).toHaveLength(1)
     expect(seen.toasts[0]).toMatch(/^dcp: compressed 1 range\(s\), pruned 0 tool call\(s\): ~2\.\dk removed \(estimated; measured at the next reply\)$/)
-    expect(seen.statuses.at(-1)).toMatch(/^compressed ~2\.\dk \(estimate\)$/)
+    expect(await hintTail($, seen)).toMatch(/^dcp: compressed ~2\.\dk \(estimate\)$/)
     expect(session.id).not.toBe(ID)
-    expect(seen.writes[`${HOME}/.claude/dcp-status-${session.id}`]).toBe(seen.statuses.at(-1))
+    expect(`dcp: ${seen.writes[`${HOME}/.claude/dcp-status-${session.id}`]}`).toBe(await hintTail($, seen))
     expect(seen.writes[LOG]).toMatch(/~2\.\dk removed \(estimated; measured at the next reply\), cache rewrite ~\d+/)
   })
 
@@ -748,7 +755,7 @@ describe('turn.complete', () => {
     await clock.advance(1000)
     expect(session.id).not.toBe(ID)
     expect(seen.toasts[0]).toMatch(/: \d+ characters removed \(estimated; measured at the next reply\)$/)
-    expect(seen.statuses.at(-1)).toMatch(/^compressed \d+ characters \(estimate\)$/)
+    expect(await hintTail($, seen)).toMatch(/^dcp: compressed \d+ characters \(estimate\)$/)
     expect(JSON.parse(seen.writes[sessionFile(session.id, 'stats')]!).segments.at(-1)).not.toHaveProperty('estimated')
   })
 
@@ -830,10 +837,10 @@ describe('turn.complete', () => {
     await complete($)
     await w.clock.advance(1000)
     await complete($, 'anything', turnUsage())
-    expect(w.seen.statuses.at(-1)).toBe('context 100 / 200.0k (0%) · saved 45 so far')
+    expect(await hintTail($, w.seen)).toBe('dcp: context 100 / 200.0k (0%) · saved 45 so far')
     expect((await ($ as any).command.run({ command: 'dcp-stats', args: '' })).text).toContain('fork removed 45 of 100, its first request wrote 30 to the cache')
     await complete($, 'again', turnUsage())
-    expect(w.seen.statuses.at(-1)).toBe('context 100 / 200.0k (0%) · saved 45 so far')
+    expect(await hintTail($, w.seen)).toBe('dcp: context 100 / 200.0k (0%) · saved 45 so far')
   })
 
   test('a counted reply with no answered request in the forked transcript is an error, not a guess', async ($, on) => {
@@ -854,22 +861,22 @@ describe('turn.complete', () => {
     const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows, texts: { [sessionFile(ID, 'stats')]: JSON.stringify(measured(5000, 2500)), [sessionFile('other', 'stats')]: JSON.stringify(measured(999999, 1)) } })
     await start($)
     await complete($)
-    expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved 2.5k so far')
-    expect(seen.writes[STATUS]).toBe(seen.statuses.at(-1))
+    expect(await hintTail($, seen)).toBe('dcp: context 62.3k / 200.0k (31%) · saved 2.5k so far')
+    expect(`dcp: ${seen.writes[STATUS]}`).toBe(await hintTail($, seen))
   })
 
   test('with nothing saved yet, shows 0', async ($, on) => {
     const { seen } = world(on, { tokens: 62300, rows: () => conversation().rows })
     await start($)
     await complete($)
-    expect(seen.statuses.at(-1)).toBe('context 62.3k / 200.0k (31%) · saved 0 so far')
+    expect(await hintTail($, seen)).toBe('dcp: context 62.3k / 200.0k (31%) · saved 0 so far')
   })
 
   test('with nothing queued and no response yet, pins nothing', async ($, on) => {
     const { seen } = world(on, { rows: () => conversation().rows })
     await start($)
     await complete($)
-    expect(seen.statuses).toEqual([])
+    expect(await hintTail($, seen)).toBeUndefined()
     expect(seen.writes[STATUS]).toBeUndefined()
   })
 

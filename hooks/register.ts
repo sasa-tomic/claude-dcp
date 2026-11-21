@@ -197,6 +197,7 @@ type State = {
   pruning: boolean
   ending: boolean
   active: boolean
+  status: string | undefined
 }
 
 const resetTurn = (state: State) => Object.assign(state, { toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], ending: false })
@@ -413,7 +414,7 @@ async function resumeFork($: Dollar, config: Config, state: State, next: () => P
     await run($, (await commands($)).remove([await statusFile($, from), await sessionFile($, from, 'queue')]))
     await log($, `now in ${id}, forked from ${from}, which is archived (${deleted} older archived session(s) deleted); background jobs now resuming ${to}: ${jobs.join(', ') || 'none'}`)
     await $.ui.toast(`dcp: compressed ${plans.length} range(s), pruned ${pruned.size} tool call(s): ${pending}`)
-    await pin($, `${removed >= 0 ? 'compressed' : 'grew'} ${sized(Math.abs(removed), scale)} (estimate)`)
+    await pin($, state, `${removed >= 0 ? 'compressed' : 'grew'} ${sized(Math.abs(removed), scale)} (estimate)`)
     if (then) $.clock.after(0, async () => { await reported($, () => then(delta)) })
     return result
   } finally {
@@ -461,17 +462,19 @@ async function noteCall($: Dollar, tool: string, input: Record<string, any>) {
 
 const statusFile = async ($: Dollar, id: string) => `${await claudeDir($)}/dcp-status-${id}`
 
-/** Pins the text under the prompt and writes it where the user's statusLine command can read it. */
-async function pin($: Dollar, text: string) {
-  $.ui.status(text)
+/** Shows the text at the end of the hint line under the prompt and writes it where the user's statusLine command can read it.
+    Not `$.ui.status`: the terminal draws that one as a warning, with a ⚠. */
+async function pin($: Dollar, state: State, text: string) {
+  state.status = text
+  $.ui.invalidate('ui.render')
   await $.fs.write(await statusFile($, await $.session.id()), text)
 }
 
 /** Pins the real context size and the saving measured so far of this session's lineage under the prompt. */
-async function showStatus($: Dollar) {
+async function showStatus($: Dollar, state: State) {
   const { context } = await $.session.usage()
   if (context.tokens === undefined) return
-  await pin($, `context ${formatTokens(context.tokens)} / ${formatTokens(context.window)} (${Math.round((context.tokens / context.window) * 100)}%) · saved ${formatTokens(savedTokens(await readStats($, await $.session.id())))} so far`)
+  await pin($, state, `context ${formatTokens(context.tokens)} / ${formatTokens(context.window)} (${Math.round((context.tokens / context.window) * 100)}%) · saved ${formatTokens(savedTokens(await readStats($, await $.session.id())))} so far`)
 }
 
 /** A command's output; a failure is its output too, since the engine would skip a hook that throws and print nothing. */
@@ -520,14 +523,19 @@ async function allocateRef($: Dollar, state: State): Promise<string> {
     session still open elsewhere) append two branches to one transcript, each numbering its own messages, so ids repeat. */
 async function sharedSessionError($: Dollar): Promise<string | undefined> {
   const id = await $.session.id()
+  const pid = (await $.process.hookEnv()).CLAUDE_PID
+  if (!pid) throw new Error('cannot tell which Claude Code process this is: the hook environment has no CLAUDE_PID')
+  const own = Number(pid)
   const dir = `${await claudeDir($)}/sessions`
   const entries = (await $.fs.list(dir)).filter(f => f.kind === 'file' && f.name.endsWith('.json'))
   const live = (await Promise.all(entries.map(async f => JSON.parse(await $.fs.read(`${dir}/${f.name}`)) as { pid: number; sessionId: string; name?: string; tmux?: string })))
     .filter(p => p.sessionId === id)
-  if (live.length < 2) return undefined
-  const named = live.map(p => `pid ${p.pid} (${[p.name, p.tmux && `tmux ${p.tmux}`].filter(Boolean).join(', ')})`)
+  const others = live.filter(p => p.pid !== own)
+  if (others.length === 0) return undefined
+  const named = (p: { pid: number; name?: string; tmux?: string }) => `pid ${p.pid} (${[p.name, p.tmux && `tmux ${p.tmux}`].filter(Boolean).join(', ')})`
+  const self = live.find(p => p.pid === own)
 
-  return `session ${id} is open in ${live.length} Claude Code processes: ${named.join(', ')}. Each writes its transcript, which breaks it; quit all but one, then send the prompt again.`
+  return `your prompt was not sent: this session (${id}) is also open in another Claude Code process, ${others.map(named).join(', ')}, and both writing its history corrupts it. This one is ${self ? named(self) : `pid ${own}`}. Close one of them, then send your prompt again.`
 }
 
 /** A `-p` or SDK run never uses the compressed session, so it pays no tokens for dcp unless DCP_HEADLESS=1 asks for it. */
@@ -559,7 +567,7 @@ async function startSession($: Dollar, state: State, isInteractive: boolean) {
 
 export const register: Register = (on, options) => {
   const config = options as unknown as Config
-  const state: State = { nextRef: 0, seeded: false, allocating: Promise.resolve(), toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: null, pruning: false, ending: false, active: false }
+  const state: State = { nextRef: 0, seeded: false, allocating: Promise.resolve(), toolsThisTurn: 0, sinceNudge: Infinity, queuedThisTurn: false, applyPending: false, stopped: false, ran: [], turns: 0, forking: null, pruning: false, ending: false, active: false, status: undefined }
 
   on('session.start', async ($, e, next) => {
     await startSession($, state, e.isInteractive)
@@ -660,6 +668,8 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'dcp-stats' }, async $ => answer($, async () => renderStats(await readStats($, await $.session.id()))))
 
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => (state.status === undefined ? next(e) : next({ ...e, props: { ...e.props, tail: `dcp: ${state.status}` } })))
+
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (e.props.tool !== COMPRESS_TOOL) return next(e)
 
@@ -723,7 +733,7 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (!state.active || e.agentId !== undefined || next.signal.aborted) return result
     await reported($, () => recordTurnStats($, e.usage))
-    await showStatus($)
+    await showStatus($, state)
     if (state.stopped) {
       state.stopped = false
       const ran = state.ran

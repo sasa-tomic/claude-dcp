@@ -25,15 +25,20 @@ export const OLDER = '00000000-0000-4000-8000-000000000002'
 export const DAY = 86_400_000
 export const LOG = `${HOME}/.claude/dcp.log`
 export const STATUS = `${HOME}/.claude/dcp-status-${ID}`
+/** What the hint line under the prompt ends with, as the terminal would draw it now. */
+export async function hintTail($: any, seen: { rendered: any[] }): Promise<string | undefined> {
+  await $.ui.render({ surface: 'terminal', component: 'PromptHint', requestId: 'hint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } })
+  return seen.rendered.at(-1).tail
+}
 export const sessionFile = (id: string, kind: 'queue' | 'stats') => `${HOME}/.claude/dcp/${id}.${kind}.json`
 export const JOBS = `${HOME}/.claude/jobs`
 
-export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; texts?: Record<string, string>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; duringId?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean; folder?: string; memory?: boolean }
+export type World = { tokens?: number; appended?: unknown[]; rows: () => unknown[]; exists?: boolean; texts?: Record<string, string>; session?: { id: string; switchOnResume?: boolean }; readExit?: number; writeExit?: number; draft?: string; fillRefusal?: 'dialog'; archived?: Record<string, { ageDays: number; size?: number; title?: string }>; failing?: string; duringResume?: () => unknown; duringId?: () => unknown; env?: Record<string, string>; jobs?: Record<string, unknown>; agents?: { id: string; status: AgentStatus }[]; saved?: boolean; folder?: string; memory?: boolean; hookEnv?: Record<string, string> }
 
 export function world(on: On, w: World) {
   const clock = mock.clock(on)
   mock.env(on, { HOME, ...w.env })
-  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], statuses: [] as (string | undefined)[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], scripts: [] as string[], commands: [] as string[], reads: [] as string[] }
+  const seen = { writes: {} as Record<string, string>, toasts: [] as string[], resumes: [] as string[], aborts: [] as string[], steps: [] as number[], tools: [] as any[], rendered: [] as any[], fills: [] as string[], prompts: [] as string[], origins: [] as any[], shell: [] as string[][], scripts: [] as string[], commands: [] as string[], reads: [] as string[] }
   // the project folder as a path -> file model, mutated by mkdir, mv and rm; the session's own transcript starts in it
   const files = new Map<string, { size: number; ageDays: number; title?: string }>([[SRC, { size: 1, ageDays: 0 }]])
   if (w.saved) files.set(`${PROJECT}/dcp-outputs/toolu_x.txt`, { size: 1, ageDays: 0 })
@@ -154,10 +159,7 @@ export function world(on: On, w: World) {
     seen.toasts.push(e.text)
     return { value: undefined }
   })
-  on('ui.status', (_$, e) => {
-    seen.statuses.push(e.text)
-    return { value: undefined }
-  })
+  on('process.hookEnv', () => ({ value: w.hookEnv ?? { CLAUDE_PID: '1' } }))
   on('command.run', async (_$, e) => {
     seen.resumes.push(`${e.command} ${e.args}`)
     if (session.switchOnResume) {
